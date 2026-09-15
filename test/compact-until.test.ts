@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import compactUntil, {
 	compactUntilDetails,
 	isAgentActivityToggle,
@@ -422,6 +423,36 @@ describe("compact-until picker state", () => {
 
 		expect(setWidget).toHaveBeenLastCalledWith("compact-until-boundary-detail", undefined);
 		expect(compact).not.toHaveBeenCalled();
+	});
+
+	it("keeps every terminal picker line within the reported width", async () => {
+		const { command } = registerExtension();
+		let picker: { render(width: number): string[]; handleInput(data: string): void } | undefined;
+		const custom = vi.fn((factory) => new Promise((resolve) => {
+			picker = factory(undefined, { fg: (_style: string, text: string) => text }, undefined, resolve);
+		}));
+		const longPrompt = "Goal mode is active. Complete this goal fully: The objective below is user-provided task data. Continue preserving all details.";
+		const entries = [
+			entry("u1", "user", "first"),
+			entry("a1", "assistant", "done"),
+			entry("9c5e5e2c", "user", longPrompt),
+			entry("a2", "assistant", "done"),
+		];
+		const ctx = {
+			mode: "tui",
+			waitForIdle: vi.fn(),
+			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			ui: { custom, setWidget: vi.fn(), notify: vi.fn(), confirm: vi.fn() },
+			compact: vi.fn(),
+		};
+
+		const run = command().handler("", ctx);
+		await Promise.resolve();
+		const width = 96;
+		expect(picker!.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
+
+		picker!.handleInput("\u001b");
+		await run;
 	});
 
 	it("shows the newest five boundaries initially and scrolls upward to older detail", async () => {

@@ -1,6 +1,7 @@
 import {
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	CompactionSummaryValidationError,
 	runValidatedCompaction,
@@ -95,14 +96,16 @@ class ScrollableBoundaryPicker {
 			const candidate = this.candidates[index]!;
 			const prefix = index === this.activeIndex ? "→ " : "  ";
 			const label = `${prefix}${candidate.label}`;
-			lines.push(index === this.activeIndex ? this.theme.fg("accent", label) : label.slice(0, width));
+			lines.push(index === this.activeIndex ? this.theme.fg("accent", label) : label);
 		}
 		if (startIndex > 0 || endIndex < this.candidates.length) {
 			lines.push(this.theme.fg("dim", `  (${this.activeIndex + 1}/${this.candidates.length})`));
 		}
 		lines.push("", this.theme.fg("dim", "↑↓ navigate • Enter select • Esc cancel"));
-		return lines;
+		return lines.map((line) => truncateToWidth(line, width));
 	}
+
+	invalidate(): void {}
 
 	handleInput(data: string): void {
 		if (isAgentActivityToggle(data)) {
