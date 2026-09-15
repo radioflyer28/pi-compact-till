@@ -3,10 +3,27 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import {
-	CompactionSummaryValidationError,
-	runValidatedCompaction,
-} from "./summary-policy.js";
-import { buildTargetedCompactionInput } from "./targeted-compaction.js";
+	compactUntilDetails as buildCompactUntilDetails,
+	executeTargetedCompaction,
+} from "./targeted-executor.js";
+import {
+	compactionEpochId,
+	hasReachedAdvisoryThreshold,
+	parseAdvisoryThreshold,
+} from "./advisory-policy.js";
+import {
+	buildCompactionOfferOptions,
+	evaluateTriggerEffectiveness,
+	formatCompactionAdvisory,
+} from "./compaction-offers.js";
+import {
+	ADVISORY_DECISION_DETAIL_KEY,
+	ADVISORY_OFFER_ENTRY_TYPE,
+	activeDecision,
+	activeOffer,
+	createDecisionRecord,
+	createOfferRecord,
+} from "./advisory-state.js";
 import {
 	findCandidateByFirstKeptEntryId,
 	getSafeBoundaryCandidates,
@@ -33,6 +50,16 @@ const PICKER_DETAIL_WIDGET = "compact-until-boundary-detail";
 // Pi tool schemas are JSON Schema-compatible TypeBox values. Keeping these
 // literal avoids adding a runtime dependency beyond Pi itself.
 const EMPTY_OBJECT_PARAMETERS = { type: "object", properties: {}, additionalProperties: false };
+const CHOOSE_ADVISORY_PARAMETERS = {
+	type: "object",
+	properties: {
+		offerId: { type: "string", description: "The active compaction advisory offer ID." },
+		optionId: { type: "string", description: "One opaque option ID from the offer, or native." },
+		summaryFocus: { type: "string", description: "Optional details the compaction summary should preserve." },
+	},
+	required: ["offerId", "optionId"],
+	additionalProperties: false,
+};
 const SCHEDULE_COMPACTION_PARAMETERS = {
 	type: "object",
 	properties: {
@@ -179,28 +206,8 @@ async function selectBoundary(ctx: any, candidates: BoundaryCandidate[]): Promis
 	}
 }
 
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function nonNullHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
-	if (!headers) return undefined;
-	return Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null));
-}
-
-function objectDetails(details: unknown): Record<string, unknown> {
-	return typeof details === "object" && details !== null && !Array.isArray(details)
-		? details as Record<string, unknown>
-		: {};
-}
-
 export function compactUntilDetails(candidate: BoundaryCandidate, agentDirected: boolean): Record<string, unknown> {
-	return {
-		kind: candidate.kind,
-		selectedUserEntryId: candidate.selectedUserEntryId,
-		firstKeptEntryId: candidate.firstKeptEntryId,
-		agentDirected,
-	};
+	return buildCompactUntilDetails(candidate, { agentDirected });
 }
 
 function toolResult(text: string, details: Record<string, unknown>) {
@@ -216,6 +223,92 @@ function cancelPending(ctx: any, message: string): void {
 
 export default function (pi: ExtensionAPI) {
 	let pending: PendingBoundary | undefined;
+	let invalidThresholdWarningShown = false;
+
+	pi.registerFlag("compact-until-advisory-threshold", {
+		description: "Context usage percentage at which to offer targeted threshold-compaction choices (default: 70)",
+		type: "string",
+	});
+
+	pi.registerTool({
+		name: "choose_compaction_boundary",
+		label: "Choose compaction boundary",
+		description: "Record a preference from the active compaction advisory for Pi's next automatic threshold compaction. This does not start or schedule compaction.",
+		promptSnippet: "Choose an offered threshold-compaction boundary",
+		promptGuidelines: ["Use only in response to an active compaction advisory, with its exact offerId and optionId."],
+		parameters: CHOOSE_ADVISORY_PARAMETERS as any,
+		executionMode: "sequential",
+		async execute(_toolCallId, params: { offerId: string; optionId: string; summaryFocus?: string }, _signal, _onUpdate, ctx) {
+			const sessionId = ctx.sessionManager.getSessionId();
+			const branch = ctx.sessionManager.getBranch();
+			const offer = activeOffer(branch, sessionId);
+			if (!offer || offer.offerId !== params.offerId) {
+				return toolResult("The compaction advisory offer is unavailable, expired, or from another branch. Do not record this preference.", { recorded: false, reason: "invalid-offer" });
+			}
+			const decision = createDecisionRecord({ offer, optionId: params.optionId, summaryFocus: params.summaryFocus });
+			if (!decision) {
+				return toolResult("The requested option is not part of the active compaction advisory. Use an exact offered optionId or native.", { recorded: false, reason: "invalid-option" });
+			}
+			if (decision.decision === "targeted") {
+				const candidate = findCandidateByFirstKeptEntryId(ctx.sessionManager.buildContextEntries(), decision.firstKeptEntryId!);
+				if (!candidate || candidate.kind !== decision.kind) {
+					return toolResult("The requested advisory boundary is stale. Leave Pi's threshold compaction behavior unchanged.", { recorded: false, reason: "stale-boundary" });
+				}
+			}
+			return toolResult(
+				decision.decision === "native"
+					? "Native threshold compaction selected for this offer. No compaction was started or scheduled."
+					: "Targeted threshold boundary recorded for this offer. No compaction was started or scheduled.",
+				{ recorded: true, [ADVISORY_DECISION_DETAIL_KEY]: decision },
+			);
+		},
+	});
+
+	pi.on("context", (event, ctx) => {
+		const configuredThreshold = parseAdvisoryThreshold(pi.getFlag("compact-until-advisory-threshold"));
+		if (configuredThreshold.usedDefault && !invalidThresholdWarningShown) {
+			invalidThresholdWarningShown = true;
+			ctx.ui.notify("Invalid --compact-until-advisory-threshold value; using 70 percent.", "warning");
+		}
+		const usage = ctx.getContextUsage();
+		if (!hasReachedAdvisoryThreshold(usage, configuredThreshold.percent) || usage?.tokens == null || !ctx.model) return;
+
+		const sessionId = ctx.sessionManager.getSessionId();
+		const branch = ctx.sessionManager.getBranch();
+		if (activeOffer(branch, sessionId)) return;
+		const contextEntries = ctx.sessionManager.buildContextEntries();
+		const boundaries = buildCompactionOfferOptions({
+			entries: contextEntries,
+			candidates: getSafeBoundaryCandidates(contextEntries),
+			totalTokens: usage.tokens,
+			contextWindow: usage.contextWindow,
+			maxOutputTokens: ctx.model.maxTokens,
+		});
+		if (boundaries.length === 0) return;
+
+		const offerId = `offer-${Date.now().toString(36)}-${branch.length.toString(36)}`;
+		const offer = createOfferRecord({
+			offerId,
+			sessionId,
+			epochId: compactionEpochId(branch, sessionId),
+			thresholdPercent: configuredThreshold.percent,
+			boundaries,
+		});
+		pi.appendEntry(ADVISORY_OFFER_ENTRY_TYPE, offer);
+		return {
+			messages: [
+				...event.messages,
+				{
+					role: "custom" as const,
+					customType: "compact-until-advisory",
+					content: formatCompactionAdvisory(offerId, boundaries),
+					display: false,
+					details: { offerId },
+					timestamp: Date.now(),
+				},
+			],
+		};
+	});
 
 	pi.registerTool({
 		name: "list_compaction_boundaries",
@@ -315,6 +408,42 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		if (event.reason === "threshold") {
+			const sessionId = ctx.sessionManager.getSessionId();
+			const branch = ctx.sessionManager.getBranch();
+			const offer = activeOffer(branch, sessionId);
+			const decision = activeDecision(branch, sessionId, offer);
+			if (!offer || decision?.decision !== "targeted") return;
+
+			const contextEntries = ctx.sessionManager.buildContextEntries();
+			const candidate = findCandidateByFirstKeptEntryId(contextEntries, decision.firstKeptEntryId!);
+			if (!candidate || candidate.kind !== decision.kind) return;
+			const contextWindow = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow;
+			if (!contextWindow) return;
+			const effectiveness = evaluateTriggerEffectiveness({
+				entries: contextEntries,
+				candidate,
+				contextWindow,
+				reserveTokens: event.preparation.settings.reserveTokens,
+			});
+			if (!effectiveness.effective) return;
+
+			const execution = await executeTargetedCompaction({
+				contextEntries,
+				candidate,
+				event,
+				ctx,
+				provenance: {
+					agentDirected: true,
+					advisory: { offerId: offer.offerId, trigger: "threshold" },
+				},
+				summaryFocus: decision.summaryFocus,
+			});
+			if (execution.ok) return { compaction: execution.compaction };
+			ctx.ui.notify(`${execution.message} Pi will use native threshold compaction instead.`, "warning");
+			return;
+		}
+
 		const activePending = pending;
 		if (
 			!activePending ||
@@ -332,47 +461,21 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify("Targeted compaction was cancelled because the selected boundary is stale.", "error");
 			return { cancel: true };
 		}
-		if (!ctx.model) {
-			ctx.ui.notify("Targeted compaction requires an active Pi model.", "error");
-			return { cancel: true };
-		}
+		const execution = await executeTargetedCompaction({
+			contextEntries,
+			candidate,
+			event,
+			ctx,
+			provenance: { agentDirected: activePending.source === "agent" },
+			summaryFocus: event.customInstructions,
+		});
+		if (execution.ok) return { compaction: execution.compaction };
 
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-		if (!auth.ok) {
-			ctx.ui.notify(`Targeted compaction could not resolve model credentials: ${auth.error}`, "error");
-			return { cancel: true };
-		}
-
-		try {
-			const input = buildTargetedCompactionInput(contextEntries, candidate, event.preparation);
-			const result = await runValidatedCompaction([
-				input,
-				ctx.model,
-				auth.apiKey,
-				nonNullHeaders(auth.headers),
-				event.customInstructions,
-				event.signal,
-				ctx.thinkingLevel,
-				undefined,
-				auth.env,
-			]);
-			return {
-				compaction: {
-					...result,
-						details: {
-							...objectDetails(result.details),
-							compactUntil: compactUntilDetails(candidate, activePending.source === "agent"),
-					},
-				},
-			};
-		} catch (error) {
-			if (error instanceof CompactionSummaryValidationError) {
-				ctx.ui.notify(`Targeted compaction cancelled after two invalid summaries: ${error.issues.map((issue) => `[${issue.code}] ${issue.message}`).join("; ")}`, "error");
-				return { cancel: true };
-			}
-			ctx.ui.notify(`Targeted compaction failed: ${errorMessage(error)}`, "error");
-			return { cancel: true };
-		}
+		const message = execution.code === "invalid-summary"
+			? execution.message.replace("produced", "cancelled after")
+			: execution.message;
+		ctx.ui.notify(message, "error");
+		return { cancel: true };
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {

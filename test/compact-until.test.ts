@@ -97,6 +97,9 @@ function registerExtension() {
 	const pi = {
 		registerCommand: (_name: string, definition: typeof command) => { command = definition; },
 		registerTool: (definition: any) => { tools.set(definition.name, definition); },
+		registerFlag: vi.fn(),
+		getFlag: vi.fn().mockReturnValue(undefined),
+		appendEntry: vi.fn(),
 		on: (event: string, handler: unknown) => {
 			if (event === "session_before_compact") beforeCompact = handler as typeof beforeCompact;
 			if (event === "agent_settled") agentSettled = handler as typeof agentSettled;
@@ -313,6 +316,30 @@ describe("validated targeted compaction integration", () => {
 
 		expect(piCompact.mock.calls[0]?.[0]).toMatchObject({ firstKeptEntryId: "a1", isSplitTurn: true, messagesToSummarize: [] });
 		expect(hookResult).toMatchObject({ compaction: { summary: splitSummary, details: { compactUntil: { kind: "agent-checkpoint", firstKeptEntryId: "a1" } } } });
+	});
+
+	it.each(["missing-model", "authentication", "generation", "cancellation"] as const)("cancels explicit targeted compaction on %s failure", async (failure) => {
+		const { tools, agentSettled, beforeCompact } = registerExtension();
+		const entries = completedTurns(2);
+		const schedulingCtx = { sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
+		await tools().get("schedule_compaction").execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, schedulingCtx);
+		await agentSettled()({}, { ...schedulingCtx, hasPendingMessages: () => false, compact: vi.fn() });
+		const ctx = executionContext(entries);
+		const event = beforeCompactEvent();
+		if (failure === "missing-model") ctx.model = undefined as any;
+		if (failure === "authentication") ctx.modelRegistry.getApiKeyAndHeaders.mockResolvedValue({ ok: false, error: "missing key" });
+		if (failure === "generation") piCompact.mockRejectedValueOnce(new Error("provider failed"));
+		if (failure === "cancellation") {
+			const controller = new AbortController();
+			controller.abort();
+			event.signal = controller.signal;
+			piCompact.mockRejectedValueOnce(new Error("aborted"));
+		}
+
+		const hookResult = await beforeCompact()(event, ctx);
+
+		expect(hookResult).toEqual({ cancel: true });
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.any(String), "error");
 	});
 
 	it("cancels and precisely notifies after two invalid generated summaries", async () => {
