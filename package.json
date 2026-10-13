@@ -1,6 +1,6 @@
 {
   "name": "pi-compact-till",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Let users and Pi agents choose safe context-compaction boundaries.",
   "license": "MIT",
   "type": "module",
