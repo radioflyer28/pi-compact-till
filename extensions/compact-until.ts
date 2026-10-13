@@ -2,6 +2,7 @@ import {
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { projectedContextEntries } from "./projected-context.js";
 import {
 	compactUntilDetails as buildCompactUntilDetails,
 	executeTargetedCompaction,
@@ -18,6 +19,7 @@ import {
 } from "./compaction-offers.js";
 import {
 	ADVISORY_DECISION_DETAIL_KEY,
+	ADVISORY_DECISION_ENTRY_TYPE,
 	ADVISORY_OFFER_ENTRY_TYPE,
 	activeDecision,
 	activeOffer,
@@ -250,11 +252,13 @@ export default function (pi: ExtensionAPI) {
 				return toolResult("The requested option is not part of the active compaction advisory. Use an exact offered optionId or native.", { recorded: false, reason: "invalid-option" });
 			}
 			if (decision.decision === "targeted") {
-				const candidate = findCandidateByFirstKeptEntryId(ctx.sessionManager.buildContextEntries(), decision.firstKeptEntryId!);
+				const candidate = findCandidateByFirstKeptEntryId(projectedContextEntries(ctx.sessionManager), decision.firstKeptEntryId!);
 				if (!candidate || candidate.kind !== decision.kind) {
 					return toolResult("The requested advisory boundary is stale. Leave Pi's threshold compaction behavior unchanged.", { recorded: false, reason: "stale-boundary" });
 				}
 			}
+			// Nested calls (including codemode) do not persist their tool-result details.
+			pi.appendEntry(ADVISORY_DECISION_ENTRY_TYPE, decision);
 			return toolResult(
 				decision.decision === "native"
 					? "Native threshold compaction selected for this offer. No compaction was started or scheduled."
@@ -276,7 +280,7 @@ export default function (pi: ExtensionAPI) {
 		const sessionId = ctx.sessionManager.getSessionId();
 		const branch = ctx.sessionManager.getBranch();
 		if (activeOffer(branch, sessionId)) return;
-		const contextEntries = ctx.sessionManager.buildContextEntries();
+		const contextEntries = projectedContextEntries(ctx.sessionManager);
 		const boundaries = buildCompactionOfferOptions({
 			entries: contextEntries,
 			candidates: getSafeBoundaryCandidates(contextEntries),
@@ -319,7 +323,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: EMPTY_OBJECT_PARAMETERS as any,
 		executionMode: "sequential",
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			const candidates = getSafeBoundaryCandidates(ctx.sessionManager.buildContextEntries());
+			const candidates = getSafeBoundaryCandidates(projectedContextEntries(ctx.sessionManager));
 			const boundaries = candidates.map((candidate) => ({
 				firstKeptEntryId: candidate.firstKeptEntryId,
 				kind: candidate.kind,
@@ -345,7 +349,7 @@ export default function (pi: ExtensionAPI) {
 				return toolResult("A compaction request is already scheduled or executing. Keep that request unchanged.", { scheduled: false, reason: "already-pending" });
 			}
 			const candidate = findCandidateByFirstKeptEntryId(
-				ctx.sessionManager.buildContextEntries(),
+				projectedContextEntries(ctx.sessionManager),
 				params.firstKeptEntryId,
 			);
 			if (!candidate) {
@@ -372,7 +376,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Compact context before a selected first-retained message",
 		handler: async (args, ctx) => {
 			await ctx.waitForIdle();
-			const candidates = getSafeBoundaryCandidates(ctx.sessionManager.buildContextEntries());
+			const candidates = getSafeBoundaryCandidates(projectedContextEntries(ctx.sessionManager));
 			if (candidates.length === 0) {
 				ctx.ui.notify("No safe compaction boundary is available in the active context.", "warning");
 				return;
@@ -415,7 +419,7 @@ export default function (pi: ExtensionAPI) {
 			const decision = activeDecision(branch, sessionId, offer);
 			if (!offer || decision?.decision !== "targeted") return;
 
-			const contextEntries = ctx.sessionManager.buildContextEntries();
+			const contextEntries = projectedContextEntries(ctx.sessionManager);
 			const candidate = findCandidateByFirstKeptEntryId(contextEntries, decision.firstKeptEntryId!);
 			if (!candidate || candidate.kind !== decision.kind) return;
 			const contextWindow = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow;
@@ -455,7 +459,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		pending = undefined;
 
-		const contextEntries = ctx.sessionManager.buildContextEntries();
+		const contextEntries = projectedContextEntries(ctx.sessionManager);
 		const candidate = findCandidateByFirstKeptEntryId(contextEntries, activePending.firstKeptEntryId);
 		if (!candidate) {
 			ctx.ui.notify("Targeted compaction was cancelled because the selected boundary is stale.", "error");
@@ -492,7 +496,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		const candidate = findCandidateByFirstKeptEntryId(
-			ctx.sessionManager.buildContextEntries(),
+			projectedContextEntries(ctx.sessionManager),
 			activePending.firstKeptEntryId,
 		);
 		if (!candidate) {

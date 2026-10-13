@@ -132,6 +132,37 @@ describe("getSafeBoundaryCandidates", () => {
 });
 
 describe("buildTargetedCompactionInput", () => {
+	it("tracks nested codemode file calls while tolerating omitted arguments and incomplete records", () => {
+		const nestedResult = {
+			...toolResult("codemode-result"),
+			message: {
+				...(toolResult("codemode-result") as any).message,
+				nestedCalls: {
+					complete: false,
+					calls: [
+						{ name: "read", arguments: { path: "nested-read.ts" } },
+						{ name: "write", arguments: { path: "nested-write.ts" } },
+						{ name: "edit", arguments: { path: "nested-edit.ts" } },
+						{ name: "read" }, // Pi omits arguments that exceed its bounded record limits.
+						{ name: "edit", arguments: { path: 42 } },
+						{ name: "write", arguments: null },
+						{ name: "unknown", arguments: { path: "not-a-file-op.ts" } },
+					],
+				},
+			},
+		} as SessionEntry;
+		const entries = [user("u1", "inspect"), assistant("a1"), nestedResult, user("u2", "keep")];
+		const candidate = getEligibleTurnCandidates(entries)[0]!;
+		const input = buildTargetedCompactionInput(entries, candidate, {
+			firstKeptEntryId: "native", messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false,
+			tokensBefore: 100, fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 100, keepRecentTokens: 10 },
+		});
+		expect(input.fileOps.read).toEqual(new Set(["nested-read.ts"]));
+		expect(input.fileOps.written).toEqual(new Set(["nested-write.ts"]));
+		expect(input.fileOps.edited).toEqual(new Set(["nested-edit.ts"]));
+	});
+
 	it("preserves previous file details and adds selected tool operations", () => {
 		const entries = [
 			{

@@ -153,6 +153,7 @@ function compactArguments(focus = "Preserve caller focus"): CompactArguments {
 		{ API_HOST: "host" },
 		{ maxAttempts: 3 },
 		{ onRetry: vi.fn() },
+		"summary-routing-session",
 	] as unknown as CompactArguments;
 }
 
@@ -188,7 +189,9 @@ describe("validated compaction runner", () => {
 		expect(actual).toBe(expected);
 		expect(compactFn).toHaveBeenCalledOnce();
 		const call = compactFn.mock.calls[0]!;
-		for (const index of [0, 1, 2, 3, 5, 6, 7, 8, 9, 10]) expect(call[index]).toBe(args[index]);
+		for (let index = 0; index < args.length; index += 1) {
+			if (index !== 4) expect(call[index]).toBe(args[index]);
+		}
 		expect(call[4]).toContain("Package coding-continuation requirements");
 		expect(call[4]).toContain("Keep exact decisions");
 	});
@@ -202,7 +205,9 @@ describe("validated compaction runner", () => {
 		const actual = await runValidatedCompaction(args, compactFn as never);
 
 		expect(compactFn).toHaveBeenCalledTimes(2);
-		expect(compactFn.mock.calls[1]![0]).toBe(args[0]);
+		for (let index = 0; index < args.length; index += 1) {
+			if (index !== 4) expect(compactFn.mock.calls[1]![index]).toBe(args[index]);
+		}
 		expect(compactFn.mock.calls[1]![4]).toContain("Preserve benchmark results");
 		expect(compactFn.mock.calls[1]![4]).toContain(REPAIR_START);
 		expect(compactFn.mock.calls[1]![4]).toContain("missing-history-heading");

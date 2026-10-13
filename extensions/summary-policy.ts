@@ -209,7 +209,9 @@ export type CompactFunction = typeof compact;
 export type CompactArguments = Parameters<CompactFunction>;
 
 function withInstructions(args: CompactArguments, instructions: string): CompactArguments {
-	return [args[0], args[1], args[2], args[3], instructions, args[5], args[6], args[7], args[8], args[9], args[10]];
+	const updated: CompactArguments = [...args];
+	updated[4] = instructions;
+	return updated;
 }
 
 /** Run Pi compaction, allowing one repair only for a returned structurally invalid checkpoint. */

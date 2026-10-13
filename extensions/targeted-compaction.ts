@@ -29,20 +29,24 @@ function collectFileOperations(
 		}
 	}
 
+	const addFileOperation = (name: string, args: unknown) => {
+		if (typeof args !== "object" || args === null || !("path" in args) || typeof args.path !== "string") return;
+		switch (name) {
+			case "read": fileOps.read.add(args.path); break;
+			case "write": fileOps.written.add(args.path); break;
+			case "edit": fileOps.edited.add(args.path); break;
+		}
+	};
 	for (const message of messages) {
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const block of message.content) {
-			if (block.type !== "toolCall" || typeof block.arguments.path !== "string") continue;
-			switch (block.name) {
-				case "read":
-					fileOps.read.add(block.arguments.path);
-					break;
-				case "write":
-					fileOps.written.add(block.arguments.path);
-					break;
-				case "edit":
-					fileOps.edited.add(block.arguments.path);
-					break;
+		if (message.role === "toolResult") {
+			// Pi stores bounded nested-call metadata, not nested results, on the parent result.
+			const nested = (message as typeof message & {
+				nestedCalls?: { calls: readonly { name: string; arguments?: unknown }[] };
+			}).nestedCalls;
+			for (const call of nested?.calls ?? []) addFileOperation(call.name, call.arguments);
+		} else if (message.role === "assistant" && Array.isArray(message.content)) {
+			for (const block of message.content) {
+				if (block.type === "toolCall") addFileOperation(block.name, block.arguments);
 			}
 		}
 	}
@@ -56,8 +60,12 @@ export function buildTargetedCompactionInput(
 	candidate: BoundaryCandidate,
 	defaultInput: CompactionInput,
 ): CompactionInput {
-	const messagesToSummarize = candidate.entriesToSummarize.flatMap(sessionEntryToContextMessages);
-	const turnPrefixMessages = candidate.turnPrefixEntries.flatMap(sessionEntryToContextMessages);
+	// Prompt/tool state is checkpointed by Pi, not summarized as conversation.
+	const conversationMessages = (entries: SessionEntry[]) => entries
+		.flatMap(sessionEntryToContextMessages)
+		.filter((message) => (message.role as string) !== "system");
+	const messagesToSummarize = conversationMessages(candidate.entriesToSummarize);
+	const turnPrefixMessages = conversationMessages(candidate.turnPrefixEntries);
 	const previousSummary = getLatestCompactionEntry(contextEntries)?.summary;
 	return {
 		firstKeptEntryId: candidate.firstKeptEntryId,
