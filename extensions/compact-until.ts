@@ -482,7 +482,7 @@ export default function (pi: ExtensionAPI) {
 		return { cancel: true };
 	});
 
-	pi.on("agent_settled", (_event, ctx) => {
+	pi.on("agent_settled", async (_event, ctx) => {
 		const activePending = pending;
 		if (!activePending || activePending.source !== "agent" || activePending.state !== "scheduled") return;
 		if (activePending.sessionId !== ctx.sessionManager.getSessionId()) {
@@ -506,13 +506,21 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		pending = { ...activePending, state: "triggering" };
-		ctx.compact({
-			customInstructions: activePending.summaryFocus,
-			onComplete: () => ctx.ui.notify("Agent-directed compaction complete.", "info"),
-			onError: (error) => {
-				pending = undefined;
-				ctx.ui.notify(`Agent-directed compaction failed: ${error.message}`, "error");
-			},
+		// ctx.compact is fire-and-forget. Keep the settled dispatch pending so
+		// Pi cannot drain prompts deferred by other observers during compaction.
+		await new Promise<void>((resolve) => {
+			ctx.compact({
+				customInstructions: activePending.summaryFocus,
+				onComplete: () => {
+					resolve();
+					ctx.ui.notify("Agent-directed compaction complete.", "info");
+				},
+				onError: (error) => {
+					pending = undefined;
+					resolve();
+					ctx.ui.notify(`Agent-directed compaction failed: ${error.message}`, "error");
+				},
+			});
 		});
 	});
 
