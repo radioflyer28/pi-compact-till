@@ -87,6 +87,24 @@ describe("compaction summary validation", () => {
 		expect(validateCompactionSummary(noHistory, { messagesToSummarize: 0, isSplitTurn: true }).valid).toBe(true);
 	});
 
+	it("accepts Pi 1.2's split-turn headings without a repair", async () => {
+		const currentTurn = VALID_TURN_SUMMARY.replace("## Early Progress", "## Progress So Far").replace("## Context for Suffix", "## Context Needed to Continue");
+		const summary = `No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n${currentTurn}`;
+		const args = compactArguments();
+		args[0] = { ...args[0], messagesToSummarize: [], isSplitTurn: true };
+		const compactFn = vi.fn().mockResolvedValue(result(summary));
+		expect((await runValidatedCompaction(args, compactFn as never)).summary).toBe(summary);
+		expect(compactFn).toHaveBeenCalledOnce();
+	});
+
+	it("still rejects missing, empty and duplicated current split-turn sections", () => {
+		const turn = VALID_TURN_SUMMARY.replace("## Early Progress", "## Progress So Far").replace("## Context for Suffix", "## Context Needed to Continue");
+		const validate = (text: string) => validateCompactionSummary(`No prior history.\n\n**Turn Context (split turn):**\n\n${text}`, { messagesToSummarize: 0, isSplitTurn: true }).issues.map((issue) => issue.code);
+		expect(validate(turn.replace("## Context Needed to Continue", "## Unexpected"))).toContain("missing-turn-heading");
+		expect(validate(turn.replace("- The boundary was selected.", ""))).toContain("empty-turn-section");
+		expect(validate(`${turn}\n\n## Progress So Far\nDuplicate`)).toContain("duplicate-turn-heading");
+	});
+
 	it("rejects empty output and missing, duplicate, empty, or out-of-order history headings", () => {
 		expect(validateCompactionSummary("", { messagesToSummarize: 1, isSplitTurn: false }).issues.map((issue) => issue.code)).toContain("empty-summary");
 		expect(validateCompactionSummary(VALID_HISTORY_SUMMARY.replace("## Goal\nShip validated targeted compaction.\n\n", ""), { messagesToSummarize: 1, isSplitTurn: false }).issues.map((issue) => issue.code)).toContain("missing-history-heading");
@@ -153,6 +171,7 @@ function compactArguments(focus = "Preserve caller focus"): CompactArguments {
 		{ API_HOST: "host" },
 		{ maxAttempts: 3 },
 		{ onRetry: vi.fn() },
+		"summary-routing-session",
 	] as unknown as CompactArguments;
 }
 
@@ -188,7 +207,9 @@ describe("validated compaction runner", () => {
 		expect(actual).toBe(expected);
 		expect(compactFn).toHaveBeenCalledOnce();
 		const call = compactFn.mock.calls[0]!;
-		for (const index of [0, 1, 2, 3, 5, 6, 7, 8, 9, 10]) expect(call[index]).toBe(args[index]);
+		for (let index = 0; index < args.length; index += 1) {
+			if (index !== 4) expect(call[index]).toBe(args[index]);
+		}
 		expect(call[4]).toContain("Package coding-continuation requirements");
 		expect(call[4]).toContain("Keep exact decisions");
 	});
@@ -202,7 +223,9 @@ describe("validated compaction runner", () => {
 		const actual = await runValidatedCompaction(args, compactFn as never);
 
 		expect(compactFn).toHaveBeenCalledTimes(2);
-		expect(compactFn.mock.calls[1]![0]).toBe(args[0]);
+		for (let index = 0; index < args.length; index += 1) {
+			if (index !== 4) expect(compactFn.mock.calls[1]![index]).toBe(args[index]);
+		}
 		expect(compactFn.mock.calls[1]![4]).toContain("Preserve benchmark results");
 		expect(compactFn.mock.calls[1]![4]).toContain(REPAIR_START);
 		expect(compactFn.mock.calls[1]![4]).toContain("missing-history-heading");

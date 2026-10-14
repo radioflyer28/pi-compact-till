@@ -73,7 +73,9 @@ function fixture() {
 	return { entries, candidate, controller, event, ctx };
 }
 
-beforeEach(() => piCompact.mockReset());
+beforeEach(() => {
+	piCompact.mockReset();
+});
 
 describe("targeted compaction executor", () => {
 	it("returns a validated result with filtered headers and provenance", async () => {
@@ -92,6 +94,21 @@ describe("targeted compaction executor", () => {
 		expect(result).toMatchObject({ ok: true, compaction: { details: { native: true, compactUntil: { firstKeptEntryId: "u2", agentDirected: true } } } });
 		expect(piCompact.mock.calls[0]?.[3]).toEqual({ kept: "yes" });
 		expect(piCompact.mock.calls[0]?.[4]).toContain("preserve tests");
+	});
+
+	it("forwards the configured runtime stream with its registry binding", async () => {
+		const { entries, candidate, event, ctx } = fixture();
+		const stream = { result: vi.fn() };
+		ctx.modelRegistry.streamSimple = vi.fn(function (this: unknown) {
+			expect(this).toBe(ctx.modelRegistry);
+			return stream;
+		});
+		piCompact.mockImplementation(async (...args) => {
+			expect(args[7](args[1], { messages: [] }, { signal: args[5] })).toBe(stream);
+			return { summary: validSummary, firstKeptEntryId: "u2", tokensBefore: 100 };
+		});
+		expect(await executeTargetedCompaction({ contextEntries: entries, candidate, event, ctx, provenance: { agentDirected: false } })).toMatchObject({ ok: true });
+		expect(ctx.modelRegistry.streamSimple).toHaveBeenCalledOnce();
 	});
 
 	it("returns typed model and authentication failures", async () => {

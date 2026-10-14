@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import compactUntil from "../extensions/compact-until.js";
-import { ADVISORY_DECISION_DETAIL_KEY, ADVISORY_OFFER_ENTRY_TYPE, parseOffer } from "../extensions/advisory-state.js";
+import { ADVISORY_DECISION_DETAIL_KEY, ADVISORY_DECISION_ENTRY_TYPE, ADVISORY_OFFER_ENTRY_TYPE, activeDecision, parseOffer } from "../extensions/advisory-state.js";
 
 const stamp = "2026-08-24T00:00:00.000Z";
 
@@ -107,6 +107,28 @@ describe("advisory extension interface", () => {
 		expect(compact).not.toHaveBeenCalled();
 	});
 
+	it("restores a nested-call decision without persisting the nested tool result", async () => {
+		const { branch, callbacks, ctx, tools } = setup(baseEntries());
+		await callbacks.get("context")({ messages: [] }, ctx);
+		const offer = parseOffer((branch.find((item) => item.type === "custom") as any).data)!;
+		await tools.get("choose_compaction_boundary").execute("codemode-call/1", {
+			offerId: offer.offerId,
+			optionId: offer.options[0]!.optionId,
+			summaryFocus: "preserve nested work",
+		}, undefined, undefined, ctx);
+
+		// Pi stores only the parent's result; nested results/details are not transcript entries.
+		expect(branch.some((item) => item.type === "message" && item.message.role === "toolResult")).toBe(false);
+		const restoredBranch = JSON.parse(JSON.stringify(branch)) as SessionEntry[];
+		expect(activeDecision(restoredBranch, "session")).toMatchObject({
+			decision: "targeted", firstKeptEntryId: offer.options[0]!.firstKeptEntryId, summaryFocus: "preserve nested work",
+		});
+		expect(restoredBranch.filter((item) => item.type === "custom" && item.customType === ADVISORY_DECISION_ENTRY_TYPE)).toHaveLength(1);
+		expect(activeDecision(restoredBranch.filter((item) => item.type !== "custom" || item.customType !== ADVISORY_DECISION_ENTRY_TYPE), "session")).toBeUndefined();
+		expect(activeDecision(restoredBranch, "other-session")).toBeUndefined();
+		expect(activeDecision([...restoredBranch, { type: "compaction", id: "new-epoch" } as SessionEntry], "session")).toBeUndefined();
+	});
+
 	it("rejects mismatched offers, options, and stale selected boundaries", async () => {
 		const { branch, callbacks, ctx, tools } = setup(baseEntries());
 		await callbacks.get("context")({ messages: [] }, ctx);
@@ -117,5 +139,6 @@ describe("advisory extension interface", () => {
 		const targeted = offer.options[0]!;
 		branch.splice(0, branch.length, branch.find((item) => item.type === "custom")!);
 		expect((await choose.execute("x", { offerId: offer.offerId, optionId: targeted.optionId }, undefined, undefined, ctx)).details).toMatchObject({ recorded: false, reason: "stale-boundary" });
+		expect(branch.some((item) => item.type === "custom" && item.customType === ADVISORY_DECISION_ENTRY_TYPE)).toBe(false);
 	});
 });

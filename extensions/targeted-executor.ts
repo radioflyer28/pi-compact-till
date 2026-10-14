@@ -1,4 +1,5 @@
 import type {
+	compact,
 	CompactionResult,
 	ExtensionContext,
 	SessionBeforeCompactEvent,
@@ -96,6 +97,10 @@ export async function executeTargetedCompaction(options: {
 	}
 
 	try {
+		type SummarizationStreamFn = NonNullable<Parameters<typeof compact>[7]>;
+		const registry = ctx.modelRegistry as typeof ctx.modelRegistry & { streamSimple?: SummarizationStreamFn };
+		// Modern Pi providers belong to this session's runtime, not the global compat registry.
+		const streamFn: SummarizationStreamFn | undefined = registry.streamSimple?.bind(registry);
 		const input = buildTargetedCompactionInput(contextEntries, candidate, event.preparation);
 		const result = await runValidatedCompaction([
 			input,
@@ -105,7 +110,7 @@ export async function executeTargetedCompaction(options: {
 			summaryFocus,
 			event.signal,
 			ctx.thinkingLevel,
-			undefined,
+			streamFn,
 			auth.env,
 		]);
 		return {

@@ -282,7 +282,7 @@ describe("validated targeted compaction integration", () => {
 			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { notify: vi.fn() },
 		});
-		const compactRequest = vi.fn();
+		const compactRequest = vi.fn((options) => options.onComplete({}));
 		await agentSettled()({}, {
 			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			hasPendingMessages: () => false,
@@ -323,7 +323,7 @@ describe("validated targeted compaction integration", () => {
 		const entries = completedTurns(2);
 		const schedulingCtx = { sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
 		await tools().get("schedule_compaction").execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, schedulingCtx);
-		await agentSettled()({}, { ...schedulingCtx, hasPendingMessages: () => false, compact: vi.fn() });
+		await agentSettled()({}, { ...schedulingCtx, hasPendingMessages: () => false, compact: vi.fn((options) => options.onComplete({})) });
 		const ctx = executionContext(entries);
 		const event = beforeCompactEvent();
 		if (failure === "missing-model") ctx.model = undefined as any;
@@ -659,7 +659,7 @@ describe("agent-directed compaction tools", () => {
 		await schedule.execute("call", { firstKeptEntryId: "a1", summaryFocus: "keep decisions" }, undefined, undefined, schedulingCtx);
 
 		const nativeResult = await beforeCompact()({ reason: "manual" }, { sessionManager: { getSessionId: () => "session" } });
-		const compact = vi.fn();
+		const compact = vi.fn((options) => options.onComplete({}));
 		const settledCtx = {
 			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			hasPendingMessages: () => false,
@@ -671,6 +671,29 @@ describe("agent-directed compaction tools", () => {
 
 		expect(nativeResult).toBeUndefined();
 		expect(compact).toHaveBeenCalledWith(expect.objectContaining({ customInstructions: "keep decisions" }));
+	});
+
+	it.each(["complete", "error"] as const)("holds the settled dispatch until compaction reports %s", async (outcome) => {
+		const { tools, agentSettled } = registerExtension();
+		const entries = completedTurns(2);
+		const ctx = {
+			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			hasPendingMessages: () => false,
+			ui: { notify: vi.fn() },
+			compact: vi.fn(),
+		};
+		await tools().get("schedule_compaction").execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, ctx);
+		let dispatchFinished = false;
+		const dispatch = Promise.resolve(agentSettled()({}, ctx)).then(() => { dispatchFinished = true; });
+		await Promise.resolve();
+		expect(ctx.compact).toHaveBeenCalledOnce();
+		// Pi drains prompts deferred by settled observers after this dispatch.
+		expect(dispatchFinished).toBe(false);
+		const options = ctx.compact.mock.calls[0]![0];
+		if (outcome === "complete") options.onComplete({});
+		else options.onError(new Error("Compaction cancelled"));
+		await dispatch;
+		expect(dispatchFinished).toBe(true);
 	});
 
 	it("cancels a deferred request when user input is pending", async () => {

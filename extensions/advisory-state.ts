@@ -4,6 +4,7 @@ import type { OfferedBoundary } from "./compaction-offers.js";
 
 export const ADVISORY_OFFER_ENTRY_TYPE = "compact-until-advisory-offer";
 export const ADVISORY_DECISION_DETAIL_KEY = "compactionAdvisoryDecision";
+export const ADVISORY_DECISION_ENTRY_TYPE = "compact-until-advisory-decision";
 export const ADVISORY_SCHEMA_VERSION = 1;
 
 export interface CompactionOfferEntry {
@@ -80,10 +81,14 @@ export function activeDecision(
 	if (!offer) return undefined;
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
 		const entry = entries[index];
-		if (entry?.type !== "message" || entry.message.role !== "toolResult") continue;
-		const details = entry.message.details;
-		if (!isRecord(details)) continue;
-		const decision = parseDecision(details[ADVISORY_DECISION_DETAIL_KEY]);
+		let decision: CompactionAdvisoryDecision | undefined;
+		if (entry?.type === "custom" && entry.customType === ADVISORY_DECISION_ENTRY_TYPE) {
+			decision = parseDecision(entry.data);
+		} else if (entry?.type === "message" && entry.message.role === "toolResult") {
+			// Older releases persisted decisions only in direct tool-result details.
+			const details = entry.message.details;
+			if (isRecord(details)) decision = parseDecision(details[ADVISORY_DECISION_DETAIL_KEY]);
+		}
 		if (decision?.sessionId === sessionId && decision.epochId === offer.epochId && decision.offerId === offer.offerId) return decision;
 	}
 	return undefined;

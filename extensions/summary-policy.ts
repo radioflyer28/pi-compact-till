@@ -63,6 +63,7 @@ const HISTORY_HEADINGS = [
 
 const HISTORY_CONTENT_HEADINGS = HISTORY_HEADINGS.filter((heading) => heading !== "## Progress");
 const TURN_HEADINGS = ["## Original Request", "## Early Progress", "## Context for Suffix"] as const;
+const CURRENT_TURN_HEADINGS = ["## Original Request", "## Progress So Far", "## Context Needed to Continue"] as const;
 const SPLIT_MARKER = "**Turn Context (split turn):**";
 
 function exactLineIndexes(text: string, heading: string): number[] {
@@ -164,7 +165,13 @@ export function validateCompactionSummary(summary: string, facts: SummaryValidat
 	} else {
 		issues.push(...validateHeadings(history, HISTORY_HEADINGS, HISTORY_CONTENT_HEADINGS, "history"));
 	}
-	issues.push(...validateHeadings(turn, TURN_HEADINGS, TURN_HEADINGS, "turn"));
+	// Pi 1.2 renamed the prefix checkpoint sections. Accept either complete
+	// native format, preserving strict order, uniqueness and content checks.
+	const turnHeadings = exactLineIndexes(turn, CURRENT_TURN_HEADINGS[1]).length > 0
+		|| exactLineIndexes(turn, CURRENT_TURN_HEADINGS[2]).length > 0
+		? CURRENT_TURN_HEADINGS
+		: TURN_HEADINGS;
+	issues.push(...validateHeadings(turn, turnHeadings, turnHeadings, "turn"));
 	return { valid: issues.length === 0, issues };
 }
 
@@ -209,7 +216,9 @@ export type CompactFunction = typeof compact;
 export type CompactArguments = Parameters<CompactFunction>;
 
 function withInstructions(args: CompactArguments, instructions: string): CompactArguments {
-	return [args[0], args[1], args[2], args[3], instructions, args[5], args[6], args[7], args[8], args[9], args[10]];
+	const updated: CompactArguments = [...args];
+	updated[4] = instructions;
+	return updated;
 }
 
 /** Run Pi compaction, allowing one repair only for a returned structurally invalid checkpoint. */
