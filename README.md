@@ -7,13 +7,13 @@ Choose the first Pi message to retain so newer working context remains verbatim.
 Install the pinned Git release globally for Pi (proactive mode requires Pi 1.2+):
 
 ```bash
-pi install git:github.com/radioflyer28/pi-compact-till@v0.2.0
+pi install git:github.com/radioflyer28/pi-compact-till@v0.2.1
 ```
 
 Install it for only the current Pi project:
 
 ```bash
-pi install git:github.com/radioflyer28/pi-compact-till@v0.2.0 -l
+pi install git:github.com/radioflyer28/pi-compact-till@v0.2.1 -l
 ```
 
 To try a local checkout without installing it:
@@ -22,7 +22,7 @@ To try a local checkout without installing it:
 pi -e .
 ```
 
-After upgrading an already-running session, wait for any active compaction to finish or fail, then run `/reload` (or restart Pi). Updating files on disk does not update an extension already loaded in memory. See [v0.2.0 release notes](docs/release-v0.2.0.md), including the remaining prompt-submission caveat.
+After upgrading an already-running session, wait for any active compaction to finish or fail, then run `/reload` (or restart Pi). Updating files on disk does not update an extension already loaded in memory. See [v0.2.1 release notes](docs/release-v0.2.1.md) for the scheduling gate and [v0.2.0 release notes](docs/release-v0.2.0.md) for the remaining prompt-submission caveat.
 
 ## Use
 
@@ -53,9 +53,9 @@ Native `/compact` and overflow recovery remain unchanged. Automatic threshold co
 The package also gives the Pi agent two tools for deliberate context management. They build on the same safe user and agent boundaries exposed by the `a` picker view.
 
 - `list_compaction_boundaries` returns safe retained-boundary IDs, their kind, and a concise preview.
-- `schedule_compaction` accepts one returned `firstKeptEntryId` plus optional `summaryFocus`.
+- `schedule_compaction` accepts one returned `firstKeptEntryId` plus optional `summaryFocus`, but only at or above the effective moderate-pressure threshold. Below that threshold it declines without creating a pending request. Missing capacity/settings also prevents scheduling. This gate applies in proactive, threshold, and off advisory modes.
 
-The agent should discover boundaries first, then schedule compaction only after a meaningful transition—such as a completed investigation, passing tests, or archiving an OpenSpec change. Scheduling does not interrupt the current run and does not ask for user confirmation. Once the agent run settles, the package revalidates the selected boundary and compacts only when there is no queued user input.
+The agent should discover boundaries first, then schedule compaction only after a meaningful transition—such as a completed investigation, passing tests, or archiving an OpenSpec change. Scheduling does not interrupt the current run and does not ask for user confirmation. Once the agent run settles, the package revalidates the selected boundary and pressure threshold, and compacts only when there is no queued user input. Explicit user `/compact` and `/compact-until` commands remain unrestricted by this agent-only gate.
 
 Pi notifies you when agent-directed compaction is scheduled, completes, is cancelled, or fails. Native `/compact`, automatic threshold compaction, and overflow recovery remain unchanged unless an agent-directed request has reached its triggering phase.
 
@@ -71,7 +71,7 @@ The rubric is to choose the **least aggressive effective boundary**, keeping unr
 - `defer`: a reason; decline for now and permit reconsideration after cooldown and material change.
 - `native`: a reason; suppress proactive offers until the next compaction epoch and leave Pi in control.
 
-Silence never authorizes compaction. Let `N = contextWindow - effectiveReserveTokens` and `H = max(16384, 5% of contextWindow)`. Moderate pressure starts at `max(0, N - 2H)` tokens; high starts at `max(0, N - H)`. With Pi's default reserve, this gives approximately **62%/74% for 128k, 82%/88% for 272k, and 88%/93% for 1M**. Per-model reserves change these values. These are reasoned capacity margins, not model-quality cliffs; use the intentional milestone tools for optional earlier cleanup.
+Silence never authorizes compaction. Let `N = contextWindow - effectiveReserveTokens` and `H = max(16384, 5% of contextWindow)`. Moderate pressure starts at `max(0, N - 2H)` tokens; high starts at `max(0, N - H)`. With Pi's default reserve, this gives approximately **62%/74% for 128k, 82%/88% for 272k, and 88%/93% for 1M**. Per-model reserves change these values. These are reasoned capacity margins, not model-quality cliffs; explicit user commands remain available for optional earlier cleanup; agent scheduling requires at least moderate pressure.
 
 Ignored/deferred offers may be replaced after two completed turns plus meaningful pressure growth, a new user-exchange boundary, or stale options. Escalation from moderate to high bypasses that cooldown, but never the opt-out or offer cap. There are at most three offers per epoch, with the final offer reserved for high pressure. Explicit percentage overrides below replace the derived bands: invalid values use derived defaults, high is raised to at least moderate, and both are capped at the native boundary. The old native-minus-10-percentage-points override is removed. See [threshold research](docs/compaction-threshold-research.md) for the rationale.
 

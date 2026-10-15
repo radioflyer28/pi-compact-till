@@ -343,7 +343,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "schedule_compaction",
 		label: "Schedule compaction",
-		description: "Schedule one safe targeted compaction after this agent run settles. Call list_compaction_boundaries first and pass one returned firstKeptEntryId. Use only after a deliberate milestone; this does not interrupt the current run.",
+		description: "Schedule one safe targeted compaction after this agent run settles, only at or above the effective moderate-pressure threshold. Call list_compaction_boundaries first and pass one returned firstKeptEntryId. Use only after a deliberate milestone; this does not interrupt the current run. Below threshold, continue working rather than compacting.",
 		promptSnippet: "Schedule a safe compaction after this run settles",
 		promptGuidelines: ["Call list_compaction_boundaries first. Schedule compaction only at deliberate milestones, such as after tests pass or a change is archived."],
 		parameters: SCHEDULE_COMPACTION_PARAMETERS as any,
@@ -360,6 +360,13 @@ export default function (pi: ExtensionAPI) {
 				return toolResult("The requested compaction boundary is unavailable or stale. List boundaries again before scheduling.", { scheduled: false, reason: "invalid-boundary" });
 			}
 
+			const eligibility = proactive.schedulingEligibility(ctx);
+			if (!eligibility.allowed) {
+				return toolResult(eligibility.reason === "below-moderate-pressure"
+					? `Compaction not scheduled: usage ${eligibility.percent!.toFixed(1)}% is below the moderate threshold ${eligibility.moderatePercent!.toFixed(1)}%. Continue working; do not use another compaction path to bypass this guard.`
+					: "Compaction not scheduled: current capacity or effective reserve is unavailable. Continue without scheduling.",
+					{ scheduled: false, ...eligibility });
+			}
 			pending = {
 				sessionId: ctx.sessionManager.getSessionId(),
 				firstKeptEntryId: candidate.firstKeptEntryId,
@@ -510,6 +517,12 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		const eligibility = proactive.schedulingEligibility(ctx);
+		if (!eligibility.allowed) {
+			pending = undefined;
+			cancelPending(ctx, `Agent-directed compaction was cancelled: ${eligibility.reason}. Continue working without compaction.`);
+			return;
+		}
 		pending = { ...activePending, state: "triggering" };
 		// ctx.compact is fire-and-forget. Keep the settled dispatch pending so
 		// Pi cannot drain prompts deferred by other observers during compaction.

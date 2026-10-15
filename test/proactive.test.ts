@@ -77,6 +77,18 @@ describe("proactive pressure and evidence policy", () => {
 		expect(proactiveThresholds({ ...capacity, reserveTokens: 1_000_000 })).toEqual({ moderate: 0, high: 0 });
 		expect(proactiveThresholds({ ...capacity, reserveTokens: 2_000_000 })).toEqual({ moderate: 0, high: 0 });
 	});
+	it("gates scheduling independently of advisory mode and honors the moderate override", () => {
+		const f = fixture();
+		for (const mode of ["proactive", "threshold", "off"]) {
+			f.flags.set("compact-until-advisory-mode", mode);
+			f.setTokens(48_000);
+			expect(f.api.schedulingEligibility(f.ctx)).toMatchObject({ allowed: false, reason: "below-moderate-pressure" });
+		}
+		f.flags.set("compact-until-proactive-threshold", "40");
+		expect(f.api.schedulingEligibility(f.ctx).allowed).toBe(true);
+		f.ctx.getContextUsage = () => undefined;
+		expect(f.api.schedulingEligibility(f.ctx)).toEqual({ allowed: false, reason: "capacity-unavailable" });
+	});
 	it("offers only positive net savings with fixed overhead and room for responses", () => {
 		const options = buildProactiveOptions(history(), budget);
 		expect(options.length).toBeGreaterThan(0);

@@ -162,6 +162,15 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 	return {
 		mode,
 		isPending: () => Boolean(pending || running),
+		schedulingEligibility(ctx: ExtensionContext) {
+			try {
+				const budget = capacity(ctx);
+				if (!budget) return { allowed: false, reason: "capacity-unavailable" };
+				const thresholds = proactiveThresholds(budget, pi.getFlag("compact-until-proactive-threshold"), pi.getFlag("compact-until-high-pressure"));
+				const percent = budget.tokens / budget.contextWindow * 100;
+				return { allowed: percent >= thresholds.moderate, reason: percent >= thresholds.moderate ? "eligible" : "below-moderate-pressure", percent, moderatePercent: thresholds.moderate };
+			} catch { return { allowed: false, reason: "capacity-unavailable" }; }
+		},
 		context(event: { messages: any[] }, ctx: ExtensionContext) {
 			if (mode() !== "proactive" || pending || running || hasOtherPending()) return;
 			if (!supported) { if (!warned) { warned = true; notify(ctx, "Proactive compaction requires Pi 1.2+; use threshold mode on older Pi.", "warning"); } return; }

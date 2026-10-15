@@ -15,7 +15,14 @@ const { piCompact } = vi.hoisted(() => ({ piCompact: vi.fn() }));
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 	...await importOriginal<typeof import("@earendil-works/pi-coding-agent")>(),
 	compact: piCompact,
+	SettingsManager: { create: () => ({ drainErrors: () => [], getCompactionSettings: () => ({ enabled: true, reserveTokens: 22_000, keepRecentTokens: 20_000 }) }) },
 }));
+
+const schedulingCapacity = {
+	cwd: process.cwd(), isProjectTrusted: () => false,
+	model: { id: "test", provider: "local", contextWindow: 272_000, maxTokens: 8_192 },
+	getContextUsage: () => ({ tokens: 220_000, contextWindow: 272_000, percent: 220_000 / 272_000 * 100 }),
+};
 
 const stamp = "2026-08-21T00:00:00.000Z";
 const validHistorySummary = `## Goal
@@ -170,12 +177,13 @@ describe("compact-until command", () => {
 		expect(compact).not.toHaveBeenCalled();
 	});
 
-	it("passes optional focus only after confirmation", async () => {
+	it("allows explicit user compaction below moderate pressure after confirmation", async () => {
 		const { command } = registerExtension();
 		const compact = vi.fn();
 		const entries = [entry("u1", "user", "first"), entry("a1", "assistant", "done"), entry("u2", "user", "later"), entry("a2", "assistant", "done")];
 		const ctx = {
 			waitForIdle: vi.fn(),
+			...schedulingCapacity, getContextUsage: () => ({ tokens: 108_800, contextWindow: 272_000, percent: 40 }),
 			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { select: vi.fn().mockResolvedValue("Keep user message: later [u2]"), confirm: vi.fn().mockResolvedValue(true), notify: vi.fn() },
 			compact,
@@ -204,7 +212,7 @@ describe("compact-until command", () => {
 		const ctx = {
 			mode: "rpc",
 			waitForIdle: vi.fn(),
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { select, notify: vi.fn(), confirm: vi.fn().mockResolvedValue(false) },
 			compact,
 		};
@@ -229,7 +237,7 @@ describe("compact-until command", () => {
 		const commandCtx = {
 			mode: "rpc",
 			waitForIdle: vi.fn(),
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { select: vi.fn().mockResolvedValue("Keep user message: later [u2]"), confirm: vi.fn().mockResolvedValue(true), notify: vi.fn() },
 			compact: vi.fn(),
 		};
@@ -253,7 +261,7 @@ describe("validated targeted compaction integration", () => {
 		const commandCtx = {
 			mode: "rpc",
 			waitForIdle: vi.fn(),
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { select: vi.fn().mockResolvedValue("Keep user message: user 2 [u2]"), confirm: vi.fn().mockResolvedValue(true), notify: vi.fn() },
 			compact: vi.fn(),
 		};
@@ -279,12 +287,12 @@ describe("validated targeted compaction integration", () => {
 		const { tools, agentSettled, beforeCompact } = registerExtension();
 		const entries = completedTurns(2);
 		await tools().get("schedule_compaction").execute("call", { firstKeptEntryId: "u2", summaryFocus: "preserve agent test evidence" }, undefined, undefined, {
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { notify: vi.fn() },
 		});
 		const compactRequest = vi.fn((options) => options.onComplete({}));
 		await agentSettled()({}, {
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			hasPendingMessages: () => false,
 			ui: { notify: vi.fn() },
 			compact: compactRequest,
@@ -305,7 +313,7 @@ describe("validated targeted compaction integration", () => {
 		await command().handler("", {
 			mode: "rpc",
 			waitForIdle: vi.fn(),
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { select, confirm: vi.fn().mockResolvedValue(true), notify: vi.fn() },
 			compact: vi.fn(),
 		});
@@ -321,7 +329,7 @@ describe("validated targeted compaction integration", () => {
 	it.each(["missing-model", "authentication", "generation", "cancellation"] as const)("cancels explicit targeted compaction on %s failure", async (failure) => {
 		const { tools, agentSettled, beforeCompact } = registerExtension();
 		const entries = completedTurns(2);
-		const schedulingCtx = { sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
+		const schedulingCtx = { ...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
 		await tools().get("schedule_compaction").execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, schedulingCtx);
 		await agentSettled()({}, { ...schedulingCtx, hasPendingMessages: () => false, compact: vi.fn((options) => options.onComplete({})) });
 		const ctx = executionContext(entries);
@@ -348,7 +356,7 @@ describe("validated targeted compaction integration", () => {
 		await command().handler("", {
 			mode: "rpc",
 			waitForIdle: vi.fn(),
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { select: vi.fn().mockResolvedValue("Keep user message: user 2 [u2]"), confirm: vi.fn().mockResolvedValue(true), notify: vi.fn() },
 			compact: vi.fn(),
 		});
@@ -424,7 +432,7 @@ describe("compact-until picker state", () => {
 		const ctx = {
 			mode: "tui",
 			waitForIdle: vi.fn(),
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: {
 				custom,
 				setWidget,
@@ -468,7 +476,7 @@ describe("compact-until picker state", () => {
 		const ctx = {
 			mode: "tui",
 			waitForIdle: vi.fn(),
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { custom, setWidget: vi.fn(), notify: vi.fn(), confirm: vi.fn() },
 			compact: vi.fn(),
 		};
@@ -623,7 +631,7 @@ describe("agent-directed compaction tools", () => {
 		const schedule = tools().get("schedule_compaction");
 		const entries = [entry("u1", "user", "first"), entry("a1", "assistant", "done"), entry("u2", "user", "later")];
 		const ctx = {
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { notify: vi.fn() },
 			compact: vi.fn(),
 		};
@@ -655,13 +663,13 @@ describe("agent-directed compaction tools", () => {
 		const { tools, agentSettled, beforeCompact } = registerExtension();
 		const schedule = tools().get("schedule_compaction");
 		const entries = [entry("u1", "user", "first"), entry("a1", "assistant", "done"), entry("u2", "user", "later")];
-		const schedulingCtx = { sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
+		const schedulingCtx = { ...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
 		await schedule.execute("call", { firstKeptEntryId: "a1", summaryFocus: "keep decisions" }, undefined, undefined, schedulingCtx);
 
 		const nativeResult = await beforeCompact()({ reason: "manual" }, { sessionManager: { getSessionId: () => "session" } });
 		const compact = vi.fn((options) => options.onComplete({}));
 		const settledCtx = {
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			hasPendingMessages: () => false,
 			ui: { notify: vi.fn() },
 			compact,
@@ -677,7 +685,7 @@ describe("agent-directed compaction tools", () => {
 		const { tools, agentSettled } = registerExtension();
 		const entries = completedTurns(2);
 		const ctx = {
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			hasPendingMessages: () => false,
 			ui: { notify: vi.fn() },
 			compact: vi.fn(),
@@ -701,11 +709,11 @@ describe("agent-directed compaction tools", () => {
 		const schedule = tools().get("schedule_compaction");
 		const entries = [entry("u1", "user", "first"), entry("a1", "assistant", "done"), entry("u2", "user", "later")];
 		await schedule.execute("call", { firstKeptEntryId: "a1" }, undefined, undefined, {
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { notify: vi.fn() },
 		});
 		const ctx = {
-			sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
+			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			hasPendingMessages: () => true,
 			ui: { notify: vi.fn() },
 			compact: vi.fn(),
@@ -717,6 +725,32 @@ describe("agent-directed compaction tools", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("cancelled"), "warning");
 	});
 
+	it("blocks scheduling at 40% without creating pending state, then accepts at the moderate boundary", async () => {
+		const { tools } = registerExtension();
+		const entries = completedTurns(2);
+		let tokens = 108_800;
+		const ctx = { ...schedulingCapacity, getContextUsage: () => ({ tokens, contextWindow: 272_000 }), sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
+		const schedule = tools().get("schedule_compaction");
+		expect((await schedule.execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, ctx)).details).toMatchObject({ scheduled: false, reason: "below-moderate-pressure", percent: 40 });
+		tokens = 217_231;
+		expect((await schedule.execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, ctx)).details.scheduled).toBe(false);
+		tokens = 217_232;
+		expect((await schedule.execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, ctx)).details.scheduled).toBe(true);
+	});
+	it("fails closed without capacity and rechecks pressure when a scheduled run settles", async () => {
+		const { tools, agentSettled } = registerExtension();
+		const entries = completedTurns(2);
+		let tokens: number | undefined;
+		const ctx = { ...schedulingCapacity, getContextUsage: () => tokens === undefined ? undefined : ({ tokens, contextWindow: 272_000 }), sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() }, hasPendingMessages: () => false, compact: vi.fn() };
+		const schedule = tools().get("schedule_compaction");
+		expect((await schedule.execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, ctx)).details.reason).toBe("capacity-unavailable");
+		tokens = 220_000;
+		expect((await schedule.execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, ctx)).details.scheduled).toBe(true);
+		tokens = 108_800;
+		await agentSettled()({}, ctx);
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("below-moderate-pressure"), "warning");
+	});
 	it("records agent-directed boundary provenance", () => {
 		const candidate = getSafeBoundaryCandidates([entry("u1", "user", "first"), entry("a1", "assistant", "done")])[0]!;
 		expect(compactUntilDetails(candidate, true)).toMatchObject({

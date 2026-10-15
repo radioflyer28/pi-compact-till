@@ -13,6 +13,7 @@ const { piCompact } = vi.hoisted(() => ({ piCompact: vi.fn() }));
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 	...await importOriginal<typeof import("@earendil-works/pi-coding-agent")>(),
 	compact: piCompact,
+	SettingsManager: { create: () => ({ drainErrors: () => [], getCompactionSettings: () => ({ enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 }) }) },
 }));
 
 const stamp = "2026-08-24T00:00:00.000Z";
@@ -76,6 +77,7 @@ function setup(options: { decision?: "targeted" | "native"; includeOffer?: boole
 	const callbacks = new Map<string, any>();
 	const tools = new Map<string, any>();
 	const ctx = {
+		cwd: process.cwd(), isProjectTrusted: () => false,
 		model: { id: "model", maxTokens: 16_000, contextWindow: 100_000 }, thinkingLevel: "high",
 		modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "key", headers: {}, env: {} }) },
 		getContextUsage: () => ({ tokens: 80_000, contextWindow: 100_000, percent: 80 }),
