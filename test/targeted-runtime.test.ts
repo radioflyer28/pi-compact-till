@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { executeTargetedCompaction } from "../extensions/targeted-executor.js";
 import { getSafeBoundaryCandidates } from "../extensions/turns.js";
+import { runValidatedCompaction } from "../extensions/summary-policy.js";
 
 // No SDK mock: use Pi's real compact(), serialization and validation with a local stream.
 const summary = `## Goal
@@ -61,5 +62,32 @@ describe("targeted compaction with the native SDK", () => {
 		});
 		expect(result).toMatchObject({ ok: true, compaction: { summary, firstKeptEntryId: "u2", usage } });
 		expect(registry.streamSimple).toHaveBeenCalledOnce();
+	});
+});
+
+// Pi's native split-prefix summarizer does not receive customInstructions.
+// Exercise the real compactor: repair and preservation must reach that stream too.
+describe("split-prefix instruction delivery", () => {
+	it("repairs malformed split headings using feedback delivered to the prefix request", async () => {
+		const prompts: string[] = [];
+		const usage = { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 30, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+		const stream = vi.fn((_model: unknown, context: unknown) => {
+			const prompt = JSON.stringify(context);
+			prompts.push(prompt);
+			const text = prompt.includes("Required structural repair")
+				? "## Original Request\nFix the race.\n\n## Progress So Far\n- Reproduced the race.\n\n## Context Needed to Continue\n- Keep the queued-message evidence."
+				: "## Original Request\nFix the race.\n\nProgress happened but required sections are missing.";
+			return { result: async () => ({ role: "assistant", content: [{ type: "text", text }], usage, stopReason: "stop", timestamp: 1 }) };
+		});
+		const result = await runValidatedCompaction([
+			{ firstKeptEntryId: "keep", messagesToSummarize: [], turnPrefixMessages: [{ role: "user", content: "Fix the race", timestamp: 1 }], isSplitTurn: true, tokensBefore: 1000, fileOps: { read: new Set(), written: new Set(), edited: new Set() }, settings: { enabled: true, reserveTokens: 4000, keepRecentTokens: 100 } },
+			{ id: "local", provider: "local", api: "local", maxTokens: 4000, reasoning: false } as any,
+			"local-key", undefined, "Preserve queued-message evidence", new AbortController().signal, "off", stream as any,
+		]);
+		expect(prompts).toHaveLength(2);
+		expect(prompts[0]).toContain("Preserve queued-message evidence");
+		expect(prompts[1]).toContain("Required structural repair");
+		expect(result.summary).toContain("## Context Needed to Continue");
+		expect(result.usage?.totalTokens).toBe(60);
 	});
 });

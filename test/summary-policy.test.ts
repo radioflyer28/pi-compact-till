@@ -91,10 +91,16 @@ describe("compaction summary validation", () => {
 		const currentTurn = VALID_TURN_SUMMARY.replace("## Early Progress", "## Progress So Far").replace("## Context for Suffix", "## Context Needed to Continue");
 		const summary = `No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n${currentTurn}`;
 		const args = compactArguments();
-		args[0] = { ...args[0], messagesToSummarize: [], isSplitTurn: true };
+		args[0] = { ...args[0], messagesToSummarize: [], isSplitTurn: true, previousSummary: undefined };
 		const compactFn = vi.fn().mockResolvedValue(result(summary));
 		expect((await runValidatedCompaction(args, compactFn as never)).summary).toBe(summary);
 		expect(compactFn).toHaveBeenCalledOnce();
+	});
+
+	it("retains a previous summary when a repeated split compaction has no new history", () => {
+		const combined = `${VALID_HISTORY_SUMMARY}\n\n---\n\n**Turn Context (split turn):**\n\n${VALID_TURN_SUMMARY}`;
+		expect(validateCompactionSummary(combined, { messagesToSummarize: 0, isSplitTurn: true, previousSummary: VALID_HISTORY_SUMMARY }).valid).toBe(true);
+		expect(validateCompactionSummary(combined, { messagesToSummarize: 0, isSplitTurn: true, previousSummary: "different summary" }).issues.map((issue) => issue.code)).toContain("previous-summary-mismatch");
 	});
 
 	it("still rejects missing, empty and duplicated current split-turn sections", () => {

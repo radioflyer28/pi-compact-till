@@ -84,7 +84,7 @@ function setup(options: { decision?: "targeted" | "native"; includeOffer?: boole
 		compact: vi.fn(), hasPendingMessages: () => false,
 	};
 	const pi = {
-		registerFlag: vi.fn(), getFlag: vi.fn(), appendEntry: vi.fn(), registerCommand: vi.fn(),
+		registerFlag: vi.fn(), getFlag: (name: string) => name === "compact-until-advisory-mode" ? "threshold" : undefined, appendEntry: vi.fn(), registerCommand: vi.fn(),
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		on: (name: string, handler: unknown) => callbacks.set(name, handler),
 	} as unknown as ExtensionAPI;

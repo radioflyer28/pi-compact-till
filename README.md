@@ -4,16 +4,16 @@ Choose the first Pi message to retain so newer working context remains verbatim.
 
 ## Install
 
-Install the published package globally for Pi:
+Install the pinned Git release globally for Pi (proactive mode requires Pi 1.2+):
 
 ```bash
-pi install npm:pi-compact-till
+pi install git:github.com/radioflyer28/pi-compact-till@v0.2.0
 ```
 
 Install it for only the current Pi project:
 
 ```bash
-pi install npm:pi-compact-till -l
+pi install git:github.com/radioflyer28/pi-compact-till@v0.2.0 -l
 ```
 
 To try a local checkout without installing it:
@@ -21,6 +21,8 @@ To try a local checkout without installing it:
 ```bash
 pi -e .
 ```
+
+After upgrading an already-running session, wait for any active compaction to finish or fail, then run `/reload` (or restart Pi). Updating files on disk does not update an extension already loaded in memory. See [v0.2.0 release notes](docs/release-v0.2.0.md), including the remaining prompt-submission caveat.
 
 ## Use
 
@@ -57,29 +59,46 @@ The agent should discover boundaries first, then schedule compaction only after 
 
 Pi notifies you when agent-directed compaction is scheduled, completes, is cancelled, or fails. Native `/compact`, automatic threshold compaction, and overflow recovery remain unchanged unless an agent-directed request has reached its triggering phase.
 
-## Automatic-compaction advisory
+## Proactive compaction advisory (Pi 1.2+)
 
-When estimated context usage first reaches 70% in a compaction epoch, the package can add a one-call advisory to the active agent's next model context. This is an early choice point only: **Pi remains solely responsible for deciding when automatic threshold compaction actually runs.** The advisory itself never starts or schedules compaction.
+The default advisory now asks for an explicit proactive decision, rather than a cutoff to save for mandatory compaction. At moderate pressure (derived from the model window and effective native reserve), the active model sees a bounded menu with source excerpts, summarized-message counts, differences between choices, projected occupancy, and estimated **net** savings. Options retain one contiguous suffix; earlier context is summarized, not simply forgotten.
 
-The advisory contains Pi's native choice and at most four deterministic targeted choices derived from the same safe boundaries as `/compact-until`. Choices favor user-exchange boundaries, omit tool-result boundaries and near-duplicate retention sizes, and include at most one agent checkpoint when it adds useful granularity. Each choice includes a preview and conservative retained/reclaimed token estimates; choices that would leave insufficient response headroom are omitted.
+The rubric is to choose the **least aggressive effective boundary**, keeping unresolved work and hard-to-reconstruct evidence verbatim. Assistant-message boundaries are structurally eligible, not verified milestones. Quoted excerpts are conversation data, not instructions. `inspect_compaction_option` returns bounded, paginated evidence for an offered option.
 
-The agent responds with `choose_compaction_boundary`, passing the advisory's exact `offerId`, an offered opaque `optionId` (or `native`), and optional `summaryFocus`. A valid response records a branch-local, one-shot preference; it does not call compaction. The hidden offer record survives session reloads without leaving advisory prose in later model prompts. A new compaction epoch or a branch that excludes the offer or response makes the preference inert.
+`respond_compaction_advisory` accepts:
 
-At Pi's native threshold, the package re-resolves the chosen boundary and checks the current retained tail against Pi's resolved reserve settings plus an additional safety margin. If it remains safe and effective, the package uses the shared validated targeted-summary flow and records the offer ID and `trigger: "threshold"` in compaction provenance. Otherwise Pi uses its native cutoff unchanged. Missing or ignored responses, the `native` choice, stale or oversized suffixes, unavailable credentials, cancellation, generation errors, and failed summary validation all fall back to native threshold compaction without cancelling it. Native manual compaction and overflow recovery never use advisory preferences.
+- `compact`: exact `offerId` and `optionId`, a `reason`, and a `preserve` list of older facts for the summary (explicitly empty if no extra instructions are needed). This authorizes compaction at the next safe completed turn/tool batch, **not** at Pi's mandatory threshold.
+- `defer`: a reason; decline for now and permit reconsideration after cooldown and material change.
+- `native`: a reason; suppress proactive offers until the next compaction epoch and leave Pi in control.
 
-Set a different soft threshold with the string-valued extension flag:
+Silence never authorizes compaction. Let `N = contextWindow - effectiveReserveTokens` and `H = max(16384, 5% of contextWindow)`. Moderate pressure starts at `max(0, N - 2H)` tokens; high starts at `max(0, N - H)`. With Pi's default reserve, this gives approximately **62%/74% for 128k, 82%/88% for 272k, and 88%/93% for 1M**. Per-model reserves change these values. These are reasoned capacity margins, not model-quality cliffs; use the intentional milestone tools for optional earlier cleanup.
+
+Ignored/deferred offers may be replaced after two completed turns plus meaningful pressure growth, a new user-exchange boundary, or stale options. Escalation from moderate to high bypasses that cooldown, but never the opt-out or offer cap. There are at most three offers per epoch, with the final offer reserved for high pressure. Explicit percentage overrides below replace the derived bands: invalid values use derived defaults, high is raised to at least moderate, and both are capped at the native boundary. The old native-minus-10-percentage-points override is removed. See [threshold research](docs/compaction-threshold-research.md) for the rationale.
 
 ```bash
-pi --compact-until-advisory-threshold 65
+pi --compact-until-proactive-threshold 60 --compact-until-high-pressure 75
 ```
 
-The value must be greater than 0 and less than 100. Invalid values warn once and use the 70% default. Because Pi's own automatic threshold is independent, abrupt context growth or a lower customized Pi threshold may cause native compaction before any advisory appears.
+Accepted compaction runs through Pi 1.2's actionable `turn_end` draft API after tool results are recorded. The extension rechecks session, projected content, model, queue, capacity and generated summary size. It does not abort the agent or force a continuation. Proactive failure leaves context unchanged; it never substitutes an unapproved cutoff. Native threshold/overflow handling remains available. Pending requests are not replayed after reload. Summary validation is structural, not proof of factual completeness.
 
-Like `/compact-until`, an advisory selects one **contiguous suffix**: one first-retained message and every message after it. It cannot pin isolated older messages while dropping messages between them.
+Capacity estimates include an 8,192-token summary allowance, estimated fixed overhead, response/persisted reserve headroom, and a safety margin. Persisted settings do not expose SDK-only in-memory overrides, and provider tokenization can differ; estimates are not guarantees.
+
+### Rollback and legacy mode
+
+```bash
+pi --compact-until-advisory-mode off
+pi --compact-until-advisory-mode threshold --compact-until-advisory-threshold 70
+```
+
+`off` disables advisory behavior but keeps manual/milestone tools. `threshold` preserves the v0.1.2 behavior: one offer at 70%, `choose_compaction_boundary` records a preference without starting compaction, and only automatic threshold compaction consumes it. This legacy tool does not authorize proactive execution. Older Pi runtimes fail closed in proactive mode; use threshold mode instead.
+
+## Proactive compaction design
+
+See [Proactive, informed context compaction](docs/proactive-compaction.md) for the design, pressure policy, implementation priorities, and evaluation plan.
 
 ## Development
 
-The package uses the documented Pi extension APIs and is tested against the current `@earendil-works/pi-coding-agent` development dependency.
+The package uses documented Pi extension APIs. Unit tests/typecheck use the pinned development SDK; proactive boundary execution additionally requires the real Pi 1.2 smoke test described in the design document. No task-quality improvement is claimed from synthetic tests alone.
 
 ```bash
 pnpm install

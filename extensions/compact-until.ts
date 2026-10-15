@@ -3,6 +3,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { projectedContextEntries } from "./projected-context.js";
+import { registerProactiveAdvisory } from "./proactive-advisory.js";
 import {
 	compactUntilDetails as buildCompactUntilDetails,
 	executeTargetedCompaction,
@@ -226,6 +227,7 @@ function cancelPending(ctx: any, message: string): void {
 export default function (pi: ExtensionAPI) {
 	let pending: PendingBoundary | undefined;
 	let invalidThresholdWarningShown = false;
+	const proactive = registerProactiveAdvisory(pi, () => Boolean(pending));
 
 	pi.registerFlag("compact-until-advisory-threshold", {
 		description: "Context usage percentage at which to offer targeted threshold-compaction choices (default: 70)",
@@ -241,6 +243,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: CHOOSE_ADVISORY_PARAMETERS as any,
 		executionMode: "sequential",
 		async execute(_toolCallId, params: { offerId: string; optionId: string; summaryFocus?: string }, _signal, _onUpdate, ctx) {
+			if (proactive.mode() !== "threshold") return toolResult("Legacy threshold preferences require threshold mode. Use respond_compaction_advisory for proactive offers.", { recorded: false, reason: "wrong-mode" });
 			const sessionId = ctx.sessionManager.getSessionId();
 			const branch = ctx.sessionManager.getBranch();
 			const offer = activeOffer(branch, sessionId);
@@ -269,6 +272,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("context", (event, ctx) => {
+		if (proactive.mode() !== "threshold") return proactive.context(event, ctx);
 		const configuredThreshold = parseAdvisoryThreshold(pi.getFlag("compact-until-advisory-threshold"));
 		if (configuredThreshold.usedDefault && !invalidThresholdWarningShown) {
 			invalidThresholdWarningShown = true;
@@ -345,7 +349,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: SCHEDULE_COMPACTION_PARAMETERS as any,
 		executionMode: "sequential",
 		async execute(_toolCallId, params: { firstKeptEntryId: string; summaryFocus?: string }, _signal, _onUpdate, ctx) {
-			if (pending) {
+			if (pending || proactive.isPending()) {
 				return toolResult("A compaction request is already scheduled or executing. Keep that request unchanged.", { scheduled: false, reason: "already-pending" });
 			}
 			const candidate = findCandidateByFirstKeptEntryId(
@@ -413,6 +417,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (event.reason === "threshold") {
+			if (proactive.mode() !== "threshold") return;
 			const sessionId = ctx.sessionManager.getSessionId();
 			const branch = ctx.sessionManager.getBranch();
 			const offer = activeOffer(branch, sessionId);

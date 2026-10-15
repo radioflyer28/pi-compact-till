@@ -18,7 +18,7 @@ function setup(initialEntries: SessionEntry[], flag?: string) {
 	let sequence = 0;
 	const pi = {
 		registerFlag: (name: string, definition: unknown) => flags.set(name, definition),
-		getFlag: (name: string) => name === "compact-until-advisory-threshold" ? flag : undefined,
+		getFlag: (name: string) => name === "compact-until-advisory-mode" ? "threshold" : name === "compact-until-advisory-threshold" ? flag : undefined,
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		registerCommand: vi.fn(),
 		on: (name: string, handler: unknown) => callbacks.set(name, handler),

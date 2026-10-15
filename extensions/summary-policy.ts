@@ -30,6 +30,7 @@ export interface SummaryValidationResult {
 export interface SummaryValidationFacts {
 	messagesToSummarize: number;
 	isSplitTurn: boolean;
+	previousSummary?: string;
 }
 
 /** Compose package requirements, optional caller emphasis, and optional retry feedback. */
@@ -158,7 +159,9 @@ export function validateCompactionSummary(summary: string, facts: SummaryValidat
 	const markerIndex = markerMatches[0]!;
 	const history = lines.slice(0, markerIndex).join("\n").replace(/\n?---\s*$/, "").trim();
 	const turn = lines.slice(markerIndex + 1).join("\n").trim();
-	if (facts.messagesToSummarize === 0) {
+	if (facts.messagesToSummarize === 0 && facts.previousSummary?.trim()) {
+		if (history !== facts.previousSummary.trim()) issues.push({ code: "previous-summary-mismatch", message: "A split turn without new history must retain the previous summary unchanged." });
+	} else if (facts.messagesToSummarize === 0) {
 		if (history !== "No prior history.") {
 			issues.push({ code: "invalid-no-history", message: "A split turn with no earlier history must begin with: No prior history." });
 		}
@@ -167,10 +170,10 @@ export function validateCompactionSummary(summary: string, facts: SummaryValidat
 	}
 	// Pi 1.2 renamed the prefix checkpoint sections. Accept either complete
 	// native format, preserving strict order, uniqueness and content checks.
-	const turnHeadings = exactLineIndexes(turn, CURRENT_TURN_HEADINGS[1]).length > 0
-		|| exactLineIndexes(turn, CURRENT_TURN_HEADINGS[2]).length > 0
-		? CURRENT_TURN_HEADINGS
-		: TURN_HEADINGS;
+	const turnHeadings = exactLineIndexes(turn, TURN_HEADINGS[1]).length > 0
+		|| exactLineIndexes(turn, TURN_HEADINGS[2]).length > 0
+		? TURN_HEADINGS
+		: CURRENT_TURN_HEADINGS;
 	issues.push(...validateHeadings(turn, turnHeadings, turnHeadings, "turn"));
 	return { valid: issues.length === 0, issues };
 }
@@ -218,6 +221,20 @@ export type CompactArguments = Parameters<CompactFunction>;
 function withInstructions(args: CompactArguments, instructions: string): CompactArguments {
 	const updated: CompactArguments = [...args];
 	updated[4] = instructions;
+	const stream = args[7];
+	if (args[0].isSplitTurn && stream) {
+		// Pi passes customInstructions to history generation, but not to its separate
+		// turn-prefix request. Deliver focus and repair feedback at the stream boundary
+		// too, without mutating the native prompt or changing provider/options routing.
+		updated[7] = (model, context, options) => stream(model, {
+			...context,
+			messages: [...context.messages, {
+				role: "user" as const,
+				content: `${instructions}\n\nApply these supplemental requirements to the checkpoint requested above. For a turn-prefix checkpoint, use exactly ## Original Request, ## Progress So Far, and ## Context Needed to Continue, in that order with nonempty content. For a history checkpoint, retain Pi's Goal/Progress format instead. Repair only sections belonging to this request; Pi itself inserts the split-turn marker and combines the checkpoints.`,
+				timestamp: Date.now(),
+			}],
+		}, options);
+	}
 	return updated;
 }
 
@@ -228,7 +245,7 @@ export async function runValidatedCompaction(
 ): Promise<CompactionResult> {
 	const input = args[0];
 	const callerFocus = args[4];
-	const facts = { messagesToSummarize: input.messagesToSummarize.length, isSplitTurn: input.isSplitTurn };
+	const facts = { messagesToSummarize: input.messagesToSummarize.length, isSplitTurn: input.isSplitTurn, previousSummary: input.previousSummary };
 	const first = await compactFn(...withInstructions(args, composeCompactionInstructions(callerFocus)));
 	const firstValidation = validateCompactionSummary(first.summary, facts);
 	if (firstValidation.valid) return first;
