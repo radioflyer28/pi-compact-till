@@ -73,20 +73,41 @@ export function fixedOverhead(entries: SessionEntry[], capacity: Capacity): numb
 export function requiredHeadroom(capacity: Capacity): number {
 	return Math.max(16_384, capacity.reserveTokens, capacity.maxOutputTokens) + Math.max(4_096, Math.ceil(capacity.contextWindow * 0.05));
 }
-export function isEffectiveBoundary(entries: SessionEntry[], id: string, capacity: Capacity): boolean {
-	const index = entries.findIndex((entry) => entry.id === id);
-	if (index < 0) return false;
-	const after = entryTokens(entries.slice(index)) + fixedOverhead(entries, capacity) + SUMMARY_ALLOWANCE_TOKENS;
-	return after + requiredHeadroom(capacity) <= capacity.contextWindow && capacity.tokens - after >= minimumSavings(capacity.tokens);
+export type EffectivenessReason = "eligible" | "capacity-unavailable" | "invalid-boundary" | "below-moderate-pressure" | "insufficient-savings" | "insufficient-headroom";
+export interface Effectiveness {
+	allowed: boolean;
+	reason: EffectivenessReason;
+	percent?: number;
+	moderatePercent?: number;
+	tokensBefore?: number;
+	projectedTokensAfter?: number;
+	netSavings?: number;
 }
-export function buildProactiveOptions(entries: SessionEntry[], capacity: Capacity): ProactiveOption[] {
+/** Shared arithmetic for estimated and actual summaries; not a dollar-savings claim. */
+export function evaluateBoundaryEffectiveness(entries: SessionEntry[], id: string, capacity: Capacity | undefined, summaryTokens = SUMMARY_ALLOWANCE_TOKENS): Effectiveness {
+	if (!capacity || ![capacity.tokens, capacity.contextWindow, capacity.reserveTokens, capacity.maxOutputTokens, summaryTokens].every((n) => Number.isFinite(n) && n >= 0) || capacity.contextWindow === 0) return { allowed: false, reason: "capacity-unavailable" };
+	const index = entries.findIndex((entry) => entry.id === id);
+	if (index < 0 || !getSafeBoundaryCandidates(entries).some((candidate) => candidate.firstKeptEntryId === id)) return { allowed: false, reason: "invalid-boundary" };
+	const after = entryTokens(entries.slice(index)) + fixedOverhead(entries, capacity) + summaryTokens;
+	const savings = capacity.tokens - after;
+	const reason: EffectivenessReason = savings < minimumSavings(capacity.tokens) ? "insufficient-savings"
+		: after + requiredHeadroom(capacity) > capacity.contextWindow ? "insufficient-headroom" : "eligible";
+	return { allowed: reason === "eligible", reason, tokensBefore: capacity.tokens, projectedTokensAfter: after, netSavings: savings };
+}
+export function evaluateAgentBoundary(entries: SessionEntry[], id: string, capacity: Capacity | undefined, moderate?: unknown, high?: unknown, summaryTokens = SUMMARY_ALLOWANCE_TOKENS): Effectiveness {
+	const effectiveness = evaluateBoundaryEffectiveness(entries, id, capacity, summaryTokens);
+	if (!capacity || effectiveness.reason === "capacity-unavailable" || effectiveness.reason === "invalid-boundary") return effectiveness;
+	const percent = capacity.tokens / capacity.contextWindow * 100;
+	const moderatePercent = proactiveThresholds(capacity, moderate, high).moderate;
+	return { ...effectiveness, percent, moderatePercent, ...(percent < moderatePercent ? { allowed: false, reason: "below-moderate-pressure" as const } : {}) };
+}
+export function isEffectiveBoundary(entries: SessionEntry[], id: string, capacity: Capacity): boolean {
+	return evaluateBoundaryEffectiveness(entries, id, capacity).allowed;
+}
+export function buildProactiveOptions(entries: SessionEntry[], capacity: Capacity, moderate?: unknown, high?: unknown): ProactiveOption[] {
 	const overhead = fixedOverhead(entries, capacity);
 	// Filter before spreading: otherwise a rejected large suffix can crowd out useful options.
-	const candidates = getSafeBoundaryCandidates(entries).filter((candidate) => {
-		const index = entries.findIndex((entry) => entry.id === candidate.firstKeptEntryId);
-		const after = entryTokens(entries.slice(index)) + overhead + SUMMARY_ALLOWANCE_TOKENS;
-		return after + requiredHeadroom(capacity) <= capacity.contextWindow && capacity.tokens - after >= minimumSavings(capacity.tokens);
-	});
+	const candidates = getSafeBoundaryCandidates(entries).filter((candidate) => evaluateAgentBoundary(entries, candidate.firstKeptEntryId, capacity, moderate, high).allowed);
 	return buildCompactionOfferOptions({ entries, candidates, totalTokens: capacity.tokens, contextWindow: capacity.contextWindow, maxOutputTokens: capacity.maxOutputTokens })
 		.map((option) => {
 			const projectedTokensAfter = option.projectedTokensAfter + overhead;

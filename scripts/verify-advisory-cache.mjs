@@ -30,7 +30,7 @@ try {
 	const manager = sdk.SessionManager.inMemory(temporary);
 	// Seed historical system state so later prompt/tool updates must remain in place.
 	manager.appendMessage({ role: "system", content: "Historical developer instructions.", toolsAdded: [], timestamp: 0 });
-	manager.appendMessage({ role: "user", content: "Investigate. " + "evidence ".repeat(6000), timestamp: 1 });
+	manager.appendMessage({ role: "user", content: "Investigate. " + "evidence ".repeat(action === "failed" ? 18_000 : 6000), timestamp: 1 });
 	const prior = fauxAssistantMessage("Completed investigation. " + "detail ".repeat(20_000));
 	prior.model = model.id; prior.provider = model.provider;
 	const usage = { input: 84_000, output: 1000, cacheRead: 0, cacheWrite: 0, totalTokens: 85_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };

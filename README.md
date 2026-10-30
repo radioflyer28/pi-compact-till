@@ -53,7 +53,7 @@ Native `/compact` and overflow recovery remain unchanged. Automatic threshold co
 The package also gives the Pi agent two tools for deliberate context management. They build on the same safe user and agent boundaries exposed by the `a` picker view.
 
 - `list_compaction_boundaries` returns safe retained-boundary IDs, their kind, and a concise preview.
-- `schedule_compaction` accepts one returned `firstKeptEntryId` plus optional `summaryFocus`, but only at or above the effective moderate-pressure threshold. Below that threshold it declines without creating a pending request. Missing capacity/settings also prevents scheduling. This gate applies in proactive, threshold, and off advisory modes.
+- `schedule_compaction` accepts one returned `firstKeptEntryId` plus optional `summaryFocus`, but only at or above the effective moderate-pressure threshold. Below that threshold it declines without creating a pending request. Missing capacity/settings also prevents scheduling. This gate applies in proactive, threshold, and off advisory modes. In the unreleased development version, scheduling also shares proactive net-savings and headroom checks at authorization, execution, and after summary generation; ineffective requests are declined with an explicit reason.
 
 The agent should discover boundaries first, then schedule compaction only after a meaningful transition—such as a completed investigation, passing tests, or archiving an OpenSpec change. Scheduling does not interrupt the current run and does not ask for user confirmation. Once the agent run settles, the package revalidates the selected boundary and pressure threshold, and compacts only when there is no queued user input. Explicit user `/compact` and `/compact-until` commands remain unrestricted by this agent-only gate.
 
@@ -109,6 +109,14 @@ pi --compact-until-advisory-mode threshold --compact-until-advisory-threshold 70
 ## Proactive compaction design
 
 See [Proactive, informed context compaction](docs/proactive-compaction.md) for the design, pressure policy, implementation priorities, and evaluation plan.
+
+## Roadmap
+
+See the [utility and evaluation roadmap](docs/roadmap.md) for near-term priorities, acceptance criteria, and the evidence required before expanding autonomous compaction.
+
+## Semantic continuation evaluations
+
+The [evaluation guide](docs/semantic-evaluation.md) describes six synthetic continuation probes, offline positive/negative controls, and paired scoring for externally generated summaries and continuations. Run `npm run eval:controls` from a development checkout with Node 22.18+ or 24+. These controls test the evaluator; they do not measure model quality or make provider calls.
 
 ## Development
 

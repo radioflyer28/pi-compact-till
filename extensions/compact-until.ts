@@ -3,6 +3,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { projectedContextEntries } from "./projected-context.js";
+import { actualSummaryTokens, fingerprint, modelIdentity } from "./proactive-policy.js";
 import { registerProactiveAdvisory } from "./proactive-advisory.js";
 import { registerCacheDiagnostics } from "./cache-diagnostics.js";
 import { registerAdvisoryDelivery } from "./advisory-delivery.js";
@@ -335,7 +336,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "schedule_compaction",
 		label: "Schedule compaction",
-		description: "Schedule one safe targeted compaction after this agent run settles, only at or above the effective moderate-pressure threshold. Call list_compaction_boundaries first and pass one returned firstKeptEntryId. Use only after a deliberate milestone; this does not interrupt the current run. Below threshold, continue working rather than compacting.",
+		description: "Schedule one safe targeted compaction after this agent run settles, only at or above the effective moderate-pressure threshold and with sufficient estimated net savings and headroom. Call list_compaction_boundaries first and pass one returned firstKeptEntryId. Use only after a deliberate milestone; this does not interrupt the current run. Below threshold, continue working rather than compacting.",
 		promptSnippet: "Schedule a safe compaction after this run settles",
 		promptGuidelines: ["Call list_compaction_boundaries first. Schedule compaction only at deliberate milestones, such as after tests pass or a change is archived."],
 		parameters: SCHEDULE_COMPACTION_PARAMETERS as any,
@@ -352,11 +353,11 @@ export default function (pi: ExtensionAPI) {
 				return toolResult("The requested compaction boundary is unavailable or stale. List boundaries again before scheduling.", { scheduled: false, reason: "invalid-boundary" });
 			}
 
-			const eligibility = proactive.schedulingEligibility(ctx);
+			const eligibility = proactive.schedulingEligibility(ctx, candidate.firstKeptEntryId);
 			if (!eligibility.allowed) {
 				return toolResult(eligibility.reason === "below-moderate-pressure"
 					? `Compaction not scheduled: usage ${eligibility.percent!.toFixed(1)}% is below the moderate threshold ${eligibility.moderatePercent!.toFixed(1)}%. Continue working; do not use another compaction path to bypass this guard.`
-					: "Compaction not scheduled: current capacity or effective reserve is unavailable. Continue without scheduling.",
+					: `Compaction not scheduled: ${eligibility.reason}. The selected cutoff must provide useful net savings and headroom with known capacity. Continue working; do not bypass this guard.`,
 					{ scheduled: false, ...eligibility });
 			}
 			pending = {
@@ -469,6 +470,16 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify("Targeted compaction was cancelled because the selected boundary is stale.", "error");
 			return { cancel: true };
 		}
+		const agentDirected = activePending.source === "agent";
+		if (agentDirected) {
+			const eligibility = proactive.schedulingEligibility(ctx, candidate.firstKeptEntryId, contextEntries, undefined, event.preparation.settings.reserveTokens);
+			if (!eligibility.allowed || ctx.hasPendingMessages() || event.signal.aborted) {
+				cancelPending(ctx, `Agent-directed compaction was cancelled: ${eligibility.allowed ? "unsafe-boundary" : eligibility.reason}.`);
+				return { cancel: true };
+			}
+		}
+		const snapshot = agentDirected ? fingerprint(contextEntries) : undefined;
+		const model = agentDirected ? modelIdentity(ctx.model!) : undefined;
 		const execution = await executeTargetedCompaction({
 			contextEntries,
 			candidate,
@@ -477,7 +488,20 @@ export default function (pi: ExtensionAPI) {
 			provenance: { agentDirected: activePending.source === "agent" },
 			summaryFocus: event.customInstructions,
 		});
-		if (execution.ok) return { compaction: execution.compaction };
+		if (execution.ok) {
+			if (agentDirected) {
+				if (event.signal.aborted || ctx.hasPendingMessages() || ctx.sessionManager.getSessionId() !== activePending.sessionId || !ctx.model || modelIdentity(ctx.model) !== model || fingerprint(projectedContextEntries(ctx.sessionManager)) !== snapshot) {
+					cancelPending(ctx, "Agent-directed compaction was cancelled: changed-during-generation.");
+					return { cancel: true };
+				}
+				const eligibility = proactive.schedulingEligibility(ctx, candidate.firstKeptEntryId, contextEntries, actualSummaryTokens(execution.compaction.summary), event.preparation.settings.reserveTokens);
+				if (!eligibility.allowed) {
+					cancelPending(ctx, `Agent-directed compaction was cancelled after summary generation: ${eligibility.reason}.`);
+					return { cancel: true };
+				}
+			}
+			return { compaction: execution.compaction };
+		}
 
 		const message = execution.code === "invalid-summary"
 			? execution.message.replace("produced", "cancelled after")
@@ -509,7 +533,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const eligibility = proactive.schedulingEligibility(ctx);
+		const eligibility = proactive.schedulingEligibility(ctx, candidate.firstKeptEntryId);
 		if (!eligibility.allowed) {
 			pending = undefined;
 			cancelPending(ctx, `Agent-directed compaction was cancelled: ${eligibility.reason}. Continue working without compaction.`);

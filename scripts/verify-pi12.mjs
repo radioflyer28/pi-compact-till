@@ -9,8 +9,9 @@ import { pathToFileURL } from "node:url";
 const packageRoot = process.argv[2];
 assert(packageRoot, "Supply the installed Pi package path; this test never installs dependencies.");
 const scenario = process.argv[3] ?? "proactive";
-assert(["proactive", "scheduled", "scheduled-low", "manual-race", "queued", "split-repair"].includes(scenario));
+assert(["proactive", "scheduled", "scheduled-low", "scheduled-ineffective", "manual-race", "queued", "split-repair"].includes(scenario));
 const scheduled = scenario === "scheduled";
+const declined = ["scheduled-low", "scheduled-ineffective"].includes(scenario);
 let competingSender;
 const root = resolve(packageRoot);
 const sdk = await import(pathToFileURL(join(root, "dist/index.js")).href);
@@ -49,8 +50,10 @@ try {
 	const fake = fauxProvider({ provider: "proactive-test", models: [{ id: "local", contextWindow: scenario === "scheduled-low" ? 272_000 : 120_000, maxTokens: 8_192 }], tokensPerSecond: 0 });
 	runtime.registerNativeProvider(fake.provider);
 	const manager = sdk.SessionManager.inMemory(temporary);
-	manager.appendMessage({ role: "user", content: "Investigate the regression. " + "evidence ".repeat(scenario === "split-repair" ? 16_000 : scheduled ? 18_000 : 10_000), timestamp: 1 });
-	const prior = fauxAssistantMessage("Investigation complete. " + "detail ".repeat(scenario === "split-repair" ? 12_000 : 20_000));
+	// Real projected context must remain above moderate pressure at authorization,
+	// not just the fake provider's reported usage at initial offer delivery.
+	manager.appendMessage({ role: "user", content: "Investigate the regression. " + "evidence ".repeat(scenario === "scheduled-ineffective" ? 20 : scenario === "split-repair" ? 24_000 : scenario === "manual-race" ? 10_000 : scheduled ? 18_000 : 20_000), timestamp: 1 });
+	const prior = fauxAssistantMessage("Investigation complete. " + "detail ".repeat(scenario === "scheduled-ineffective" ? 50_000 : scenario === "split-repair" ? 12_000 : 20_000));
 	prior.model = "local"; prior.provider = "proactive-test";
 	prior.usage = { input: 74_000, output: 1_000, cacheRead: 0, cacheWrite: 0, totalTokens: 75_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 	if (scenario === "scheduled-low") prior.usage = { ...prior.usage, input: 107_800, output: 1_000, totalTokens: 108_800 };
@@ -135,17 +138,19 @@ try {
 			return fauxAssistantMessage("Continued after committed compaction.");
 		},
 	]);
-	if (scenario === "scheduled-low") fake.setResponses([
+	if (declined) fake.setResponses([
 		() => fauxAssistantMessage(fauxToolCall("list_compaction_boundaries", {}), { stopReason: "toolUse" }),
 		() => {
-			selectedId = manager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "user").at(-1).id;
+			selectedId = scenario === "scheduled-ineffective"
+				? manager.getBranch().find((entry) => entry.type === "message" && entry.message.role === "assistant").id
+				: manager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "user").at(-1).id;
 			return fauxAssistantMessage(fauxToolCall("schedule_compaction", { firstKeptEntryId: selectedId }), { stopReason: "toolUse" });
 		},
 		() => {
 			const result = manager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "schedule_compaction").at(-1).message;
 			assert.equal(result.details.scheduled, false);
-			assert.equal(result.details.reason, "below-moderate-pressure");
-			assert(result.details.percent < result.details.moderatePercent);
+			assert.equal(result.details.reason, scenario === "scheduled-ineffective" ? "insufficient-savings" : "below-moderate-pressure");
+			assert(scenario === "scheduled-ineffective" ? result.details.percent >= result.details.moderatePercent : result.details.percent < result.details.moderatePercent);
 			assert.equal(manager.getBranch().filter((entry) => entry.type === "compaction").length, 0);
 			return fauxAssistantMessage("Continued after committed compaction.");
 		},
@@ -177,15 +182,15 @@ try {
 		assert(!JSON.stringify(manager.getBranch()).includes("Competing prompt during manual summary"), "Rejected prompt was not queued despite deliverAs followUp");
 	} else assert.deepEqual(errors, [], "No extension runtime errors, including prompt-during-compaction");
 	assert.equal(session.getLastAssistantText(), "Continued after committed compaction.", JSON.stringify({ calls: fake.state.callCount, outcomes: manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "compact-until-proactive-v1").map((entry) => ({ kind: entry.data.kind, status: entry.data.status, action: entry.data.action, metrics: entry.data.metrics })), toolResults: manager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "toolResult").map((entry) => ({ error: entry.message.isError, content: entry.message.content })) }));
-	assert.equal(fake.state.callCount, scenario === "manual-race" ? 2 : scheduled ? 5 : scenario === "scheduled-low" ? 3 : scenario === "split-repair" ? 7 : scenario === "queued" ? 5 : 4, "Bounded selection, summary and continuation; no loop");
+	assert.equal(fake.state.callCount, scenario === "manual-race" ? 2 : scheduled ? 5 : declined ? 3 : scenario === "split-repair" ? 7 : scenario === "queued" ? 5 : 4, "Bounded selection, summary and continuation; no loop");
 	if (cacheDiagnostics) {
 		const diagnostics = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "compact-until-cache-diagnostic-v1");
 		assert(diagnostics.length >= 2, "Capture must include selection and continuation, but not nested summaries");
-		assert.equal(diagnostics.length, fake.state.callCount - (scenario === "split-repair" ? 4 : scenario === "scheduled-low" ? 0 : 1));
+		assert.equal(diagnostics.length, fake.state.callCount - (scenario === "split-repair" ? 4 : declined ? 0 : 1));
 		assert(!JSON.stringify(sdk.convertToLlm(manager.buildSessionContext().messages)).includes("compact-until-cache-diagnostic-v1"), "Diagnostics must not enter model context");
 		console.log(JSON.stringify({ cacheDiagnostics: true, records: diagnostics.length, transportObserved: diagnostics.some((entry) => entry.data.attemptCount > 0) }));
 	}
-	console.log(JSON.stringify({ runtime: sdk.VERSION, scenario, passed: true, modelRequests: fake.state.callCount, compactions: manager.getBranch().filter((entry) => entry.type === "compaction").length, ordering: scenario === "scheduled-low" ? "below-moderate scheduling declined -> continuation without compaction" : scenario === "manual-race" ? "manual summary -> competing prompt rejected -> committed compaction -> explicit continuation" : scenario === "queued" ? "summary discarded -> normal continuation -> queued follow-up delivered" : "persisted tool result -> summary -> committed compaction -> next provider request", extensionErrors: errors.length }));
+	console.log(JSON.stringify({ runtime: sdk.VERSION, scenario, passed: true, modelRequests: fake.state.callCount, compactions: manager.getBranch().filter((entry) => entry.type === "compaction").length, ordering: declined ? "ineligible scheduling declined -> continuation without compaction" : scenario === "manual-race" ? "manual summary -> competing prompt rejected -> committed compaction -> explicit continuation" : scenario === "queued" ? "summary discarded -> normal continuation -> queued follow-up delivered" : "persisted tool result -> summary -> committed compaction -> next provider request", extensionErrors: errors.length }));
 } finally {
 	session?.dispose();
 	if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;

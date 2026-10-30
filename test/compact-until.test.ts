@@ -96,6 +96,10 @@ function completedTurns(count: number): SessionEntry[] {
 	return entries;
 }
 
+function schedulingHistory(): SessionEntry[] {
+	return [entry("u1", "user", "Evidence ".repeat(30_000)), entry("a1", "assistant", "done"), entry("u2", "user", "later")];
+}
+
 function registerExtension() {
 	let command: { handler: (args: string, ctx: any) => Promise<void> } | undefined;
 	let beforeCompact: ((event: any, ctx: any) => Promise<unknown>) | undefined;
@@ -135,7 +139,9 @@ function piCompactionResult(summary = validHistorySummary) {
 
 function executionContext(entries: SessionEntry[]) {
 	return {
-		model: { id: "test-model" },
+		...schedulingCapacity,
+		hasPendingMessages: () => false,
+		model: { ...schedulingCapacity.model, id: "test-model" },
 		thinkingLevel: "high",
 		sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 		modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "key", headers: { valid: "header", omitted: null }, env: { HOST: "local" } }) },
@@ -285,7 +291,7 @@ describe("validated targeted compaction integration", () => {
 
 	it("applies agent summaryFocus after deferred execution and records agent provenance", async () => {
 		const { tools, agentSettled, beforeCompact } = registerExtension();
-		const entries = completedTurns(2);
+		const entries = schedulingHistory();
 		await tools().get("schedule_compaction").execute("call", { firstKeptEntryId: "u2", summaryFocus: "preserve agent test evidence" }, undefined, undefined, {
 			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { notify: vi.fn() },
@@ -328,7 +334,7 @@ describe("validated targeted compaction integration", () => {
 
 	it.each(["missing-model", "authentication", "generation", "cancellation"] as const)("cancels explicit targeted compaction on %s failure", async (failure) => {
 		const { tools, agentSettled, beforeCompact } = registerExtension();
-		const entries = completedTurns(2);
+		const entries = schedulingHistory();
 		const schedulingCtx = { ...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
 		await tools().get("schedule_compaction").execute("call", { firstKeptEntryId: "u2" }, undefined, undefined, schedulingCtx);
 		await agentSettled()({}, { ...schedulingCtx, hasPendingMessages: () => false, compact: vi.fn((options) => options.onComplete({})) });
@@ -347,7 +353,7 @@ describe("validated targeted compaction integration", () => {
 		const hookResult = await beforeCompact()(event, ctx);
 
 		expect(hookResult).toEqual({ cancel: true });
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.any(String), "error");
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.any(String), ["missing-model", "cancellation"].includes(failure) ? "warning" : "error");
 	});
 
 	it("cancels and precisely notifies after two invalid generated summaries", async () => {
@@ -629,7 +635,7 @@ describe("agent-directed compaction tools", () => {
 	it("schedules one validated request with optional summary focus without compacting inline", async () => {
 		const { tools } = registerExtension();
 		const schedule = tools().get("schedule_compaction");
-		const entries = [entry("u1", "user", "first"), entry("a1", "assistant", "done"), entry("u2", "user", "later")];
+		const entries = schedulingHistory();
 		const ctx = {
 			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { notify: vi.fn() },
@@ -662,7 +668,7 @@ describe("agent-directed compaction tools", () => {
 	it("defers compaction until the agent settles and preserves native manual compaction while scheduled", async () => {
 		const { tools, agentSettled, beforeCompact } = registerExtension();
 		const schedule = tools().get("schedule_compaction");
-		const entries = [entry("u1", "user", "first"), entry("a1", "assistant", "done"), entry("u2", "user", "later")];
+		const entries = schedulingHistory();
 		const schedulingCtx = { ...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
 		await schedule.execute("call", { firstKeptEntryId: "a1", summaryFocus: "keep decisions" }, undefined, undefined, schedulingCtx);
 
@@ -683,7 +689,7 @@ describe("agent-directed compaction tools", () => {
 
 	it.each(["complete", "error"] as const)("holds the settled dispatch until compaction reports %s", async (outcome) => {
 		const { tools, agentSettled } = registerExtension();
-		const entries = completedTurns(2);
+		const entries = schedulingHistory();
 		const ctx = {
 			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			hasPendingMessages: () => false,
@@ -707,7 +713,7 @@ describe("agent-directed compaction tools", () => {
 	it("cancels a deferred request when user input is pending", async () => {
 		const { tools, agentSettled } = registerExtension();
 		const schedule = tools().get("schedule_compaction");
-		const entries = [entry("u1", "user", "first"), entry("a1", "assistant", "done"), entry("u2", "user", "later")];
+		const entries = schedulingHistory();
 		await schedule.execute("call", { firstKeptEntryId: "a1" }, undefined, undefined, {
 			...schedulingCapacity, sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" },
 			ui: { notify: vi.fn() },
@@ -727,7 +733,7 @@ describe("agent-directed compaction tools", () => {
 
 	it("blocks scheduling at 40% without creating pending state, then accepts at the moderate boundary", async () => {
 		const { tools } = registerExtension();
-		const entries = completedTurns(2);
+		const entries = schedulingHistory();
 		let tokens = 108_800;
 		const ctx = { ...schedulingCapacity, getContextUsage: () => ({ tokens, contextWindow: 272_000 }), sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() } };
 		const schedule = tools().get("schedule_compaction");
@@ -739,7 +745,7 @@ describe("agent-directed compaction tools", () => {
 	});
 	it("fails closed without capacity and rechecks pressure when a scheduled run settles", async () => {
 		const { tools, agentSettled } = registerExtension();
-		const entries = completedTurns(2);
+		const entries = schedulingHistory();
 		let tokens: number | undefined;
 		const ctx = { ...schedulingCapacity, getContextUsage: () => tokens === undefined ? undefined : ({ tokens, contextWindow: 272_000 }), sessionManager: { buildContextEntries: () => entries, getSessionId: () => "session" }, ui: { notify: vi.fn() }, hasPendingMessages: () => false, compact: vi.fn() };
 		const schedule = tools().get("schedule_compaction");

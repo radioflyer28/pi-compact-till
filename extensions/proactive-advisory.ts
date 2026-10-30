@@ -5,7 +5,7 @@ import { entryTokens } from "./compaction-offers.js";
 import { projectedContextEntries } from "./projected-context.js";
 import { executeTargetedCompaction } from "./targeted-executor.js";
 import { findCandidateByFirstKeptEntryId } from "./turns.js";
-import { actualSummaryTokens, buildProactiveOptions, canReoffer, conversationTurnCount, fingerprint, fixedOverhead, formatProactiveAdvisory, inspectOption, isEffectiveBoundary, minimumSavings, modelIdentity, pressureBand, proactiveThresholds, requiredHeadroom, SELECTION_RUBRIC, type Capacity, type ProactiveOffer } from "./proactive-policy.js";
+import { actualSummaryTokens, buildProactiveOptions, canReoffer, conversationTurnCount, fingerprint, fixedOverhead, formatProactiveAdvisory, inspectOption, isEffectiveBoundary, evaluateAgentBoundary, modelIdentity, pressureBand, proactiveThresholds, requiredHeadroom, SELECTION_RUBRIC, type Capacity, type Effectiveness, type ProactiveOffer } from "./proactive-policy.js";
 
 export const PROACTIVE_ENTRY = "compact-until-proactive-v1";
 type Action = "compact" | "defer" | "native";
@@ -69,6 +69,14 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 		if (![config.reserveTokens, ctx.model.maxTokens].every((number) => Number.isFinite(number) && number >= 0)) return;
 		return { tokens: usage.tokens, contextWindow: usage.contextWindow, reserveTokens: config.reserveTokens, maxOutputTokens: ctx.model.maxTokens };
 	}
+	function schedulingEligibility(ctx: ExtensionContext, id: string, entries = projectedContextEntries(ctx.sessionManager), summaryTokens?: number, preparedReserve?: number): Effectiveness {
+		try {
+			const budget = capacity(ctx);
+			// Do not undercut either a native runtime override or a newly increased reserve.
+			if (budget && preparedReserve !== undefined) budget.reserveTokens = Math.max(budget.reserveTokens, preparedReserve);
+			return evaluateAgentBoundary(entries, id, budget, pi.getFlag("compact-until-proactive-threshold"), pi.getFlag("compact-until-high-pressure"), summaryTokens);
+		} catch { return { allowed: false, reason: "capacity-unavailable" }; }
+	}
 	function lookup(ctx: ExtensionContext, id: string) {
 		const offer = latestOffer(ctx);
 		if (!offer || offer.id !== id || !ctx.model || offer.model !== modelIdentity(ctx.model)) return;
@@ -108,6 +116,8 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 				if (!Array.isArray(params.preserve) || params.preserve.length > 12 || params.preserve.some((item) => typeof item !== "string" || !item.trim() || item.length > 400)) return result("Compact requires an explicit bounded preserve list.", { reason: "invalid-preserve" }, true);
 				const option = found.offer.options.find((item) => item.optionId === params.optionId);
 				if (!option || !findCandidateByFirstKeptEntryId(found.entries, option.firstKeptEntryId)) return result("Choose an exact offered option.", { reason: "invalid-option" }, true);
+				const eligibility = schedulingEligibility(ctx, option.firstKeptEntryId, found.entries);
+				if (!eligibility.allowed) return result(`Compaction not authorized: ${eligibility.reason}. Inspect, defer, or continue working.`, { accepted: false, ...eligibility });
 				pending = { offer: found.offer, response: { ...params, reason: params.reason.trim(), preserve: params.preserve.map((item) => item.trim()) } };
 			}
 			append(ctx, { kind: "decision", offerId: params.offerId, action: params.action, reason: params.reason.trim(), ...(params.action === "compact" ? { optionId: params.optionId, preserve: pending!.response.preserve } : {}) });
@@ -137,7 +147,7 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 		running = true;
 		try {
 			const budget = capacity(ctx);
-			if (!budget || !isEffectiveBoundary(found.entries, option.firstKeptEntryId, budget)) {
+			if (!budget || !schedulingEligibility(ctx, option.firstKeptEntryId, found.entries).allowed) {
 				outcome("insufficient-benefit-or-headroom", budget ? { tokensBefore: budget.tokens, contextWindow: budget.contextWindow, retainedTokens: entryTokens(found.entries.slice(found.entries.findIndex((entry) => entry.id === option.firstKeptEntryId))), fixedOverhead: fixedOverhead(found.entries, budget), requiredHeadroom: requiredHeadroom(budget) } : undefined);
 				return;
 			}
@@ -150,10 +160,9 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 				provenance: { agentDirected: true }, summaryFocus: `Boundary rationale: ${request.response.reason}\nPreserve these older facts (in addition to normal summary requirements):\n${request.response.preserve!.map((item) => `- ${item}`).join("\n") || "(No additional facts specified.)"}` });
 			if (!execution.ok) { outcome(execution.code); return; }
 			if (mode() !== "proactive" || ctx.signal.aborted || ctx.hasPendingMessages() || hasOtherPending() || ctx.sessionManager.getSessionId() !== sessionId || !ctx.model || modelIdentity(ctx.model) !== model || fingerprint(projectedContextEntries(ctx.sessionManager)) !== snapshot || fingerprint(ctx.sessionManager.getBranch()) !== branchSnapshot) { outcome("changed-during-generation"); return; }
-			const index = found.entries.findIndex((entry) => entry.id === candidate.firstKeptEntryId);
-			const after = entryTokens(found.entries.slice(index)) + fixedOverhead(found.entries, budget) + actualSummaryTokens(execution.compaction.summary);
-			if (after + requiredHeadroom(budget) > budget.contextWindow || budget.tokens - after < minimumSavings(budget.tokens)) { outcome("generated-summary-too-large"); return; }
-			const telemetry = { policyVersion: 1, offerId: request.offer.id, status: "draft-proposed", pressure: request.offer.pressure, tokensBefore: budget.tokens, estimatedTokensAfter: after, latencyMs: Date.now() - started };
+			const finalEligibility = schedulingEligibility(ctx, candidate.firstKeptEntryId, found.entries, actualSummaryTokens(execution.compaction.summary));
+			if (!finalEligibility.allowed) { outcome(finalEligibility.reason); return; }
+			const telemetry = { policyVersion: 1, offerId: request.offer.id, status: "draft-proposed", pressure: request.offer.pressure, tokensBefore: finalEligibility.tokensBefore!, estimatedTokensAfter: finalEligibility.projectedTokensAfter!, latencyMs: Date.now() - started };
 			notify(ctx, "Proactive summary prepared; Pi will validate and commit the turn-boundary compaction.", "info");
 			return { entries: [{ type: "compaction", summary: execution.compaction.summary, firstKeptEntryId: candidate.firstKeptEntryId, usage: execution.compaction.usage, details: { ...execution.compaction.details as object, proactive: telemetry } }, { type: "custom", customType: PROACTIVE_ENTRY, data: { version: 1, sessionId, epochId: request.offer.epochId, kind: "outcome", ...telemetry } }] } as any;
 		} catch { outcome("execution-error"); } finally { running = false; }
@@ -162,15 +171,7 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 	return {
 		mode,
 		isPending: () => Boolean(pending || running),
-		schedulingEligibility(ctx: ExtensionContext) {
-			try {
-				const budget = capacity(ctx);
-				if (!budget) return { allowed: false, reason: "capacity-unavailable" };
-				const thresholds = proactiveThresholds(budget, pi.getFlag("compact-until-proactive-threshold"), pi.getFlag("compact-until-high-pressure"));
-				const percent = budget.tokens / budget.contextWindow * 100;
-				return { allowed: percent >= thresholds.moderate, reason: percent >= thresholds.moderate ? "eligible" : "below-moderate-pressure", percent, moderatePercent: thresholds.moderate };
-			} catch { return { allowed: false, reason: "capacity-unavailable" }; }
-		},
+		schedulingEligibility,
 		offer(ctx: ExtensionContext) {
 			if (mode() !== "proactive" || pending || running || hasOtherPending()) return;
 			if (!supported) { if (!warned) { warned = true; notify(ctx, "Proactive compaction requires Pi 1.2+; use threshold mode on older Pi.", "warning"); } return; }
@@ -191,7 +192,7 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 				const percent = budget.tokens / budget.contextWindow * 100;
 				const previousStillEffective = previous?.options.some((option) => findCandidateByFirstKeptEntryId(entries, option.firstKeptEntryId) && isEffectiveBoundary(entries, option.firstKeptEntryId, budget));
 				if (!canReoffer({ previous, count: offers.length, turn, percent, pressure, lastUserId, previousOptionsStale: Boolean(previous && (previous.model !== modelIdentity(ctx.model!) || !unchangedPrefix(previous, entries) || !previousStillEffective)), optedOut: history.some((record) => record.kind === "decision" && record.action === "native") })) return;
-				const options = buildProactiveOptions(entries, budget);
+				const options = buildProactiveOptions(entries, budget, pi.getFlag("compact-until-proactive-threshold"), pi.getFlag("compact-until-high-pressure"));
 				if (!options.length) return;
 				const offer: ProactiveOffer = { version: 1, id: `proactive-${randomUUID()}`, sessionId, epochId: compactionEpochId(branch, sessionId), model: modelIdentity(ctx.model!), pressure, percent, turn, lastUserId, prefixLength: entries.length, fingerprint: fingerprint(entries), capacity: budget, options };
 				const text = formatProactiveAdvisory(offer, entries);

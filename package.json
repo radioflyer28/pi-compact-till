@@ -25,7 +25,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "pack:dry-run": "npm pack --dry-run"
+    "pack:dry-run": "npm pack --dry-run",
+    "eval:controls": "node scripts/eval-continuation.mjs controls"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

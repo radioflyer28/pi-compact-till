@@ -163,10 +163,12 @@ describe("threshold advisory application", () => {
 
 	it("keeps scheduled-agent behavior and lets the resulting epoch expire an advisory", async () => {
 		const fixture = setup();
+		Object.assign(fixture.ctx.sessionManager.buildContextEntries()[0]!, message("u1", "user", "Evidence ".repeat(20_000)));
+		fixture.ctx.compact.mockImplementation((options: any) => options.onComplete({}));
 		const schedule = fixture.tools.get("schedule_compaction");
 		const result = await schedule.execute("schedule", { firstKeptEntryId: "u2" }, undefined, undefined, fixture.ctx);
 		expect(result.details).toMatchObject({ scheduled: true });
-		fixture.callbacks.get("agent_settled")({}, fixture.ctx);
+		await fixture.callbacks.get("agent_settled")({}, fixture.ctx);
 		expect(fixture.ctx.compact).toHaveBeenCalledTimes(1);
 
 		fixture.branch.push({ type: "compaction", id: "cmp-after-scheduled", parentId: null, timestamp: stamp } as SessionEntry);
