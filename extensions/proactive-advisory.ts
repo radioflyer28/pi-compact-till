@@ -171,7 +171,7 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 				return { allowed: percent >= thresholds.moderate, reason: percent >= thresholds.moderate ? "eligible" : "below-moderate-pressure", percent, moderatePercent: thresholds.moderate };
 			} catch { return { allowed: false, reason: "capacity-unavailable" }; }
 		},
-		context(event: { messages: any[] }, ctx: ExtensionContext) {
+		offer(ctx: ExtensionContext) {
 			if (mode() !== "proactive" || pending || running || hasOtherPending()) return;
 			if (!supported) { if (!warned) { warned = true; notify(ctx, "Proactive compaction requires Pi 1.2+; use threshold mode on older Pi.", "warning"); } return; }
 			try {
@@ -194,8 +194,9 @@ export function registerProactiveAdvisory(pi: ExtensionAPI, hasOtherPending: () 
 				const options = buildProactiveOptions(entries, budget);
 				if (!options.length) return;
 				const offer: ProactiveOffer = { version: 1, id: `proactive-${randomUUID()}`, sessionId, epochId: compactionEpochId(branch, sessionId), model: modelIdentity(ctx.model!), pressure, percent, turn, lastUserId, prefixLength: entries.length, fingerprint: fingerprint(entries), capacity: budget, options };
+				const text = formatProactiveAdvisory(offer, entries);
 				append(ctx, { kind: "offer", offer });
-				return { messages: [...event.messages, { role: "custom" as const, customType: "compact-until-proactive-advisory", content: formatProactiveAdvisory(offer, entries), display: false, details: { offerId: offer.id }, timestamp: Date.now() }] };
+				return text;
 			} catch { if (!warned) { warned = true; notify(ctx, "Proactive advisory unavailable: unable to resolve capacity/settings. Native compaction remains unchanged.", "warning"); } }
 		},
 	};

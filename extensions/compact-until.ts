@@ -4,6 +4,8 @@ import {
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { projectedContextEntries } from "./projected-context.js";
 import { registerProactiveAdvisory } from "./proactive-advisory.js";
+import { registerCacheDiagnostics } from "./cache-diagnostics.js";
+import { registerAdvisoryDelivery } from "./advisory-delivery.js";
 import {
 	compactUntilDetails as buildCompactUntilDetails,
 	executeTargetedCompaction,
@@ -228,6 +230,7 @@ export default function (pi: ExtensionAPI) {
 	let pending: PendingBoundary | undefined;
 	let invalidThresholdWarningShown = false;
 	const proactive = registerProactiveAdvisory(pi, () => Boolean(pending));
+	registerCacheDiagnostics(pi);
 
 	pi.registerFlag("compact-until-advisory-threshold", {
 		description: "Context usage percentage at which to offer targeted threshold-compaction choices (default: 70)",
@@ -271,8 +274,8 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("context", (event, ctx) => {
-		if (proactive.mode() !== "threshold") return proactive.context(event, ctx);
+	registerAdvisoryDelivery(pi, (ctx) => {
+		if (proactive.mode() !== "threshold") return proactive.offer(ctx);
 		const configuredThreshold = parseAdvisoryThreshold(pi.getFlag("compact-until-advisory-threshold"));
 		if (configuredThreshold.usedDefault && !invalidThresholdWarningShown) {
 			invalidThresholdWarningShown = true;
@@ -302,20 +305,9 @@ export default function (pi: ExtensionAPI) {
 			thresholdPercent: configuredThreshold.percent,
 			boundaries,
 		});
+		const text = formatCompactionAdvisory(offerId, boundaries);
 		pi.appendEntry(ADVISORY_OFFER_ENTRY_TYPE, offer);
-		return {
-			messages: [
-				...event.messages,
-				{
-					role: "custom" as const,
-					customType: "compact-until-advisory",
-					content: formatCompactionAdvisory(offerId, boundaries),
-					display: false,
-					details: { offerId },
-					timestamp: Date.now(),
-				},
-			],
-		};
+		return text;
 	});
 
 	pi.registerTool({

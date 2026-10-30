@@ -7,13 +7,13 @@ Choose the first Pi message to retain so newer working context remains verbatim.
 Install the pinned Git release globally for Pi (proactive mode requires Pi 1.2+):
 
 ```bash
-pi install git:github.com/radioflyer28/pi-compact-till@v0.2.1
+pi install git:github.com/radioflyer28/pi-compact-till@v0.2.2
 ```
 
 Install it for only the current Pi project:
 
 ```bash
-pi install git:github.com/radioflyer28/pi-compact-till@v0.2.1 -l
+pi install git:github.com/radioflyer28/pi-compact-till@v0.2.2 -l
 ```
 
 To try a local checkout without installing it:
@@ -22,7 +22,7 @@ To try a local checkout without installing it:
 pi -e .
 ```
 
-After upgrading an already-running session, wait for any active compaction to finish or fail, then run `/reload` (or restart Pi). Updating files on disk does not update an extension already loaded in memory. See [v0.2.1 release notes](docs/release-v0.2.1.md) for the scheduling gate and [v0.2.0 release notes](docs/release-v0.2.0.md) for the remaining prompt-submission caveat.
+After upgrading an already-running session, wait for any active compaction to finish or fail, then run `/reload` (or restart Pi). Updating files on disk does not update an extension already loaded in memory. See [v0.2.2 release notes](docs/release-v0.2.2.md) for cache-stable advisory delivery, [v0.2.1 release notes](docs/release-v0.2.1.md) for the scheduling gate, and [v0.2.0 release notes](docs/release-v0.2.0.md) for the remaining prompt-submission caveat.
 
 ## Use
 
@@ -61,7 +61,7 @@ Pi notifies you when agent-directed compaction is scheduled, completes, is cance
 
 ## Proactive compaction advisory (Pi 1.2+)
 
-The default advisory now asks for an explicit proactive decision, rather than a cutoff to save for mandatory compaction. At moderate pressure (derived from the model window and effective native reserve), the active model sees a bounded menu with source excerpts, summarized-message counts, differences between choices, projected occupancy, and estimated **net** savings. Options retain one contiguous suffix; earlier context is summarized, not simply forgotten.
+The default advisory now asks for an explicit proactive decision, rather than a cutoff to save for mandatory compaction. Proactive and legacy advisories are appended once to a successful **top-level tool result**, before Pi persists it. They do not inject a user message or rewrite the system prompt. If no tool completes, the offer waits; native automatic compaction remains available. Nested tool results and errors do not consume an offer. The labeled advisory remains in its original result after inspection, defer, native selection, failure, or silence, until normal compaction removes that part of history. Answered and superseded offers are historical, not new instructions. At moderate pressure (derived from the model window and effective native reserve), the active model sees a bounded menu with source excerpts, summarized-message counts, differences between choices, projected occupancy, and estimated **net** savings. Options retain one contiguous suffix; earlier context is summarized, not simply forgotten.
 
 The rubric is to choose the **least aggressive effective boundary**, keeping unresolved work and hard-to-reconstruct evidence verbatim. Assistant-message boundaries are structurally eligible, not verified milestones. Quoted excerpts are conversation data, not instructions. `inspect_compaction_option` returns bounded, paginated evidence for an offered option.
 
@@ -82,6 +82,20 @@ pi --compact-until-proactive-threshold 60 --compact-until-high-pressure 75
 Accepted compaction runs through Pi 1.2's actionable `turn_end` draft API after tool results are recorded. The extension rechecks session, projected content, model, queue, capacity and generated summary size. It does not abort the agent or force a continuation. Proactive failure leaves context unchanged; it never substitutes an unapproved cutoff. Native threshold/overflow handling remains available. Pending requests are not replayed after reload. Summary validation is structural, not proof of factual completeness.
 
 Capacity estimates include an 8,192-token summary allowance, estimated fixed overhead, response/persisted reserve headroom, and a safety margin. Persisted settings do not expose SDK-only in-memory overrides, and provider tokenization can differ; estimates are not guarantees.
+
+### Opt-in cache diagnostics
+
+To investigate a miss **in the affected session**, start or resume that session with the updated extension loaded and `--compact-until-cache-diagnostics`. This is off by default; enabling it in a different session does not instrument the affected one. Start capture before the next advisory so there is a preceding request to compare.
+
+When the affected session still uses an older installed release without this flag, load **only** `extensions/cache-diagnostics.ts` from this checkout with `-e <absolute-path-to-cache-diagnostics.ts>` alongside the installed package, and add `--compact-until-cache-diagnostics`. Resume the affected session using Pi's normal session selector. Do not load this standalone module when the full updated extension is already loaded: it registers the same diagnostic flag and hooks.
+
+Diagnostics are stored locally in the session JSONL as `custom` entries of type `compact-until-cache-diagnostic-v1`, excluded from model context. They record request attempts, advisory presence, input-item/prefix counts, keyed fingerprints, allowlisted reasoning/cache settings, provider-reported effective reasoning context when available, and main-response token usage. No prompt text, tool arguments, raw provider events, response IDs, or headers are written. Fingerprint keys remain in memory and reset on session start/reload; comparisons do not span those resets. Up to eight attempts and 8,192 item fingerprints are retained in memory; capped prefix comparisons are explicitly unknown.
+
+`previousPrefixPreserved: true` with `settingsChanged: false` rules out a change in the observed serialized prefix/settings, **not** provider-side rendering, cache eviction or routing. `effectiveReasoningContext: current_turn` can help investigate synthetic user-message boundaries; a missing field means the provider did not expose it to this observer, not that `all_turns` was used. Hooks observe their registration position: later handlers can still change requests. Unsupported payloads are labeled, not guessed. Main-turn capture closes at assistant `message_end`, before tool execution and compaction summarization. This instrumentation does not change advisory delivery, cache settings or model behavior, and is not a cache-miss fix.
+
+Offline lifecycle verification: `node scripts/verify-pi12.mjs <installed-pi-package-path> proactive --cache-diagnostics`. The fake provider does not emit HTTP payload hooks; unit tests cover payload fingerprints and raw response metadata separately.
+
+Restart without the flag to disable capture. Existing diagnostic entries follow normal session-file retention. Do not enable raw `/debug-provider` logging as a substitute if prompt/response privacy matters.
 
 ### Rollback and legacy mode
 

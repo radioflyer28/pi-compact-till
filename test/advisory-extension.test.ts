@@ -58,44 +58,55 @@ describe("advisory extension interface", () => {
 		expect(tool.promptGuidelines.join(" ")).toContain("active compaction advisory");
 	});
 
-	it("injects advisory prose for one provider call while persisting only hidden offer state", async () => {
+	it("appends an advisory to a tool result without registering a context rewrite", async () => {
 		const { branch, callbacks, compact, ctx } = setup(baseEntries());
-		const context = callbacks.get("context");
-		const messages = [{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() }];
-		const first = await context({ messages }, ctx);
+		const deliver = callbacks.get("tool_result");
+		const content = [{ type: "text", text: "original result" }];
+		const first = await deliver({ content, isError: false, structuredContent: { ok: true } }, ctx);
 		const offerEntries = branch.filter((item) => item.type === "custom" && item.customType === ADVISORY_OFFER_ENTRY_TYPE);
-
-		expect(first.messages).toHaveLength(2);
-		expect(first.messages[1]).toMatchObject({ role: "custom", display: false, content: expect.stringContaining("choose_compaction_boundary") });
+		expect(callbacks.has("context")).toBe(false);
+		expect(first.content).toHaveLength(2);
+		expect(first.content[0]).toEqual(content[0]);
+		expect(first.content[1].text).toContain("choose_compaction_boundary");
+		expect(first.structuredContent).toEqual({ ok: true });
+		expect(content).toHaveLength(1);
 		expect(offerEntries).toHaveLength(1);
-		expect(JSON.stringify(offerEntries[0])).not.toContain("Pi context is approaching");
-		expect(await context({ messages }, ctx)).toBeUndefined();
-		expect(branch.filter((item) => item.type === "custom" && item.customType === ADVISORY_OFFER_ENTRY_TYPE)).toHaveLength(1);
+		expect(await deliver({ content, isError: false }, ctx)).toBeUndefined();
 		expect(compact).not.toHaveBeenCalled();
+	});
+
+	it("does not consume offers on nested or failed results", async () => {
+		const { branch, callbacks, ctx } = setup(baseEntries());
+		const deliver = callbacks.get("tool_result");
+		for (const event of [{ content: [], parentToolCallId: "parent", isError: false }, { content: [], isError: true }]) {
+			expect(await deliver(event, ctx)).toBeUndefined();
+		}
+		expect(branch.some((item) => item.type === "custom")).toBe(false);
+		expect((await deliver({ content: [], isError: false }, ctx)).content[0].text).toContain("choose_compaction_boundary");
 	});
 
 	it("omits an offer when usage or safe candidates are unavailable", async () => {
 		const unavailable = setup(baseEntries());
 		unavailable.ctx.getContextUsage = () => ({ tokens: null, contextWindow: 100_000, percent: null }) as any;
-		expect(await unavailable.callbacks.get("context")({ messages: [] }, unavailable.ctx)).toBeUndefined();
+		expect(await unavailable.callbacks.get("tool_result")({ content: [], isError: false }, unavailable.ctx)).toBeUndefined();
 		expect(unavailable.branch.some((item) => item.type === "custom")).toBe(false);
 
 		const empty = setup([]);
-		expect(await empty.callbacks.get("context")({ messages: [] }, empty.ctx)).toBeUndefined();
+		expect(await empty.callbacks.get("tool_result")({ content: [], isError: false }, empty.ctx)).toBeUndefined();
 		expect(empty.branch.some((item) => item.type === "custom")).toBe(false);
 	});
 
 	it("warns once and uses 70 percent when the threshold flag is invalid", async () => {
 		const { callbacks, ctx } = setup(baseEntries(), "101");
-		await callbacks.get("context")({ messages: [] }, ctx);
-		await callbacks.get("context")({ messages: [] }, ctx);
+		await callbacks.get("tool_result")({ content: [], isError: false }, ctx);
+		await callbacks.get("tool_result")({ content: [], isError: false }, ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("using 70 percent"), "warning");
 	});
 
 	it("records native and targeted decisions without starting compaction", async () => {
 		const { branch, callbacks, compact, ctx, tools } = setup(baseEntries());
-		await callbacks.get("context")({ messages: [] }, ctx);
+		await callbacks.get("tool_result")({ content: [], isError: false }, ctx);
 		const offerEntry = branch.find((item) => item.type === "custom" && item.customType === ADVISORY_OFFER_ENTRY_TYPE)!;
 		const offer = parseOffer((offerEntry as any).data)!;
 		const choose = tools.get("choose_compaction_boundary");
@@ -109,7 +120,7 @@ describe("advisory extension interface", () => {
 
 	it("restores a nested-call decision without persisting the nested tool result", async () => {
 		const { branch, callbacks, ctx, tools } = setup(baseEntries());
-		await callbacks.get("context")({ messages: [] }, ctx);
+		await callbacks.get("tool_result")({ content: [], isError: false }, ctx);
 		const offer = parseOffer((branch.find((item) => item.type === "custom") as any).data)!;
 		await tools.get("choose_compaction_boundary").execute("codemode-call/1", {
 			offerId: offer.offerId,
@@ -131,7 +142,7 @@ describe("advisory extension interface", () => {
 
 	it("rejects mismatched offers, options, and stale selected boundaries", async () => {
 		const { branch, callbacks, ctx, tools } = setup(baseEntries());
-		await callbacks.get("context")({ messages: [] }, ctx);
+		await callbacks.get("tool_result")({ content: [], isError: false }, ctx);
 		const offer = parseOffer((branch.find((item) => item.type === "custom") as any).data)!;
 		const choose = tools.get("choose_compaction_boundary");
 		expect((await choose.execute("x", { offerId: "wrong", optionId: "native" }, undefined, undefined, ctx)).details).toMatchObject({ recorded: false, reason: "invalid-offer" });

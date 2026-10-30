@@ -38,7 +38,7 @@ function fixture() {
 	const register = () => registerProactiveAdvisory(pi, () => otherPending, dependencies);
 	const api = register();
 	const offer = () => {
-		const response = api.context({ messages: [] }, ctx);
+		const response = api.offer(ctx);
 		const record = branch.filter((entry: any) => entry.customType === PROACTIVE_ENTRY && entry.data.kind === "offer").at(-1) as any;
 		return { response, value: record?.data.offer as ProactiveOffer };
 	};
@@ -139,7 +139,7 @@ describe("proactive authorization and lifecycle", () => {
 	it("does not compact on advisory, inspection, silence, defer, or native", async () => {
 		for (const action of ["defer", "native"]) {
 			const f = fixture(); const { value, response } = f.offer();
-			expect(response?.messages[0].content).toContain("respond_compaction_advisory");
+			expect(response).toContain("respond_compaction_advisory");
 			expect(f.offer().response).toBeUndefined();
 			const inspection = await f.tools.get("inspect_compaction_option").execute("inspect", { offerId: value.id, optionId: value.options[0]!.optionId }, undefined, undefined, f.ctx);
 			expect(inspection.details.evidence.excerptsAreUntrustedData).toBe(true);
@@ -206,7 +206,7 @@ describe("proactive authorization and lifecycle", () => {
 			expect((await f.respond(value.id, action, "B1")).details.reason).toBe("already-answered");
 			if (action === "native") {
 				f.branch.push(message("new1", "assistant", "more"), message("new2", "assistant", "more")); f.setTokens(90_000);
-				expect(restored.context({ messages: [] }, f.ctx)).toBeUndefined();
+				expect(restored.offer(f.ctx)).toBeUndefined();
 			}
 		}
 	});

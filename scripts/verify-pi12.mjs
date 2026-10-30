@@ -66,6 +66,8 @@ try {
 		}] : [],
 	});
 	await loader.reload();
+	const cacheDiagnostics = process.argv.includes("--cache-diagnostics");
+	if (cacheDiagnostics) loader.getExtensions().runtime.flagValues.set("compact-until-cache-diagnostics", true);
 	assert.deepEqual(loader.getExtensions().errors, [], "Extension must load against installed runtime");
 	let selectedId;
 	const responseSteps = [
@@ -97,14 +99,25 @@ try {
 			return fauxAssistantMessage("Continued after committed compaction.");
 		},
 	];
-	if (scenario === "split-repair") responseSteps.splice(2, 0, (context) => {
-		assert(JSON.stringify(context).includes("Required structural repair"), "Pi 1.2 split-prefix repair must receive feedback");
-		return fauxAssistantMessage("## Original Request\nFix the regression.\n\n## Progress So Far\n- Investigation completed.\n\n## Context Needed to Continue\n- Preserve regression evidence.");
-	});
+	if (scenario === "split-repair") {
+		// The completed delivery tool adds a later agent checkpoint. Splitting there
+		// now requires both history and turn-prefix summaries on each attempt.
+		responseSteps.splice(1, 0, () => fauxAssistantMessage(summary));
+		responseSteps.splice(3, 0, () => fauxAssistantMessage(summary), (context) => {
+			assert(JSON.stringify(context).includes("Required structural repair"), "Pi 1.2 split-prefix repair must receive feedback");
+			return fauxAssistantMessage("## Original Request\nFix the regression.\n\n## Progress So Far\n- Investigation completed.\n\n## Context Needed to Continue\n- Preserve regression evidence.");
+		});
+	}
 	if (scenario === "queued") responseSteps.push((context) => {
 		assert(JSON.stringify(context).includes("User input arriving during summary generation"), "Queued follow-up must be delivered normally");
 		assert.equal(manager.getBranch().filter((entry) => entry.type === "compaction").length, 0);
 		return fauxAssistantMessage("Continued after committed compaction.");
+	});
+	// Offers are appended to a newly completed tool result, never to a user message.
+	responseSteps.unshift(() => {
+		const message = fauxAssistantMessage(fauxToolCall("list_compaction_boundaries", {}), { stopReason: "toolUse" });
+		message.usage = { ...prior.usage, input: 75_000, output: 100, totalTokens: 75_100 };
+		return message;
 	});
 	fake.setResponses(responseSteps);
 	if (scheduled) fake.setResponses([
@@ -164,7 +177,14 @@ try {
 		assert(!JSON.stringify(manager.getBranch()).includes("Competing prompt during manual summary"), "Rejected prompt was not queued despite deliverAs followUp");
 	} else assert.deepEqual(errors, [], "No extension runtime errors, including prompt-during-compaction");
 	assert.equal(session.getLastAssistantText(), "Continued after committed compaction.", JSON.stringify({ calls: fake.state.callCount, outcomes: manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "compact-until-proactive-v1").map((entry) => ({ kind: entry.data.kind, status: entry.data.status, action: entry.data.action, metrics: entry.data.metrics })), toolResults: manager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "toolResult").map((entry) => ({ error: entry.message.isError, content: entry.message.content })) }));
-	assert.equal(fake.state.callCount, scenario === "manual-race" ? 2 : scheduled ? 5 : ["split-repair", "queued"].includes(scenario) ? 4 : 3, "Bounded selection, summary and continuation; no loop");
+	assert.equal(fake.state.callCount, scenario === "manual-race" ? 2 : scheduled ? 5 : scenario === "scheduled-low" ? 3 : scenario === "split-repair" ? 7 : scenario === "queued" ? 5 : 4, "Bounded selection, summary and continuation; no loop");
+	if (cacheDiagnostics) {
+		const diagnostics = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "compact-until-cache-diagnostic-v1");
+		assert(diagnostics.length >= 2, "Capture must include selection and continuation, but not nested summaries");
+		assert.equal(diagnostics.length, fake.state.callCount - (scenario === "split-repair" ? 4 : scenario === "scheduled-low" ? 0 : 1));
+		assert(!JSON.stringify(sdk.convertToLlm(manager.buildSessionContext().messages)).includes("compact-until-cache-diagnostic-v1"), "Diagnostics must not enter model context");
+		console.log(JSON.stringify({ cacheDiagnostics: true, records: diagnostics.length, transportObserved: diagnostics.some((entry) => entry.data.attemptCount > 0) }));
+	}
 	console.log(JSON.stringify({ runtime: sdk.VERSION, scenario, passed: true, modelRequests: fake.state.callCount, compactions: manager.getBranch().filter((entry) => entry.type === "compaction").length, ordering: scenario === "scheduled-low" ? "below-moderate scheduling declined -> continuation without compaction" : scenario === "manual-race" ? "manual summary -> competing prompt rejected -> committed compaction -> explicit continuation" : scenario === "queued" ? "summary discarded -> normal continuation -> queued follow-up delivered" : "persisted tool result -> summary -> committed compaction -> next provider request", extensionErrors: errors.length }));
 } finally {
 	session?.dispose();
