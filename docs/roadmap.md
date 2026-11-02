@@ -16,7 +16,7 @@ The strongest established capability is boundary control with structural and lif
 - Proactive selection checks estimated net token savings and headroom. Agent scheduling has a pressure gate but does not yet share all those effectiveness checks.
 - Summary validation is structural. It cannot establish that a critical constraint or piece of evidence survived.
 
-See [v0.2.2 release notes](release-v0.2.2.md) and the [compaction design](proactive-compaction.md) for current behavior.
+See [v0.2.3 release notes](release-v0.2.3.md), [v0.2.2 release notes](release-v0.2.2.md), and the [compaction design](proactive-compaction.md) for current behavior.
 
 ## Guardrails for every stage
 
@@ -111,7 +111,7 @@ The work has three tracks, not a dependency chain. The agreed immediate scope is
 3. **Observation track:** inspect existing metadata and observe natural advisories while normal work proceeds. Build the smallest read-only usefulness report around the actual failure categories. Do not force compaction or wait for this track before doing the other two.
 4. **Combine the evidence:** fix demonstrated failures and rerun comparisons before changing defaults or adding modes. If no semantic failure is demonstrated, call the result increased confidence, not improved model quality.
 
-### Current implementation evidence (unreleased)
+### Current implementation evidence (v0.2.3)
 
 - Shared agent effectiveness checks and regression tests now cover scheduled/proactive authorization, execution-time changes, generated-summary size, and reserve changes during generation. Existing human/native paths remain separate.
 - Six synthetic structured-decision probes and paired-result scoring are available; see the [evaluation guide](semantic-evaluation.md). Authored controls are not model-generated results.

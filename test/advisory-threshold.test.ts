@@ -157,8 +157,9 @@ describe("threshold advisory application", () => {
 		const controller = new AbortController();
 		cancelledEvent.signal = controller.signal;
 		controller.abort();
-		piCompact.mockReset().mockRejectedValueOnce(new Error("aborted"));
+		piCompact.mockReset();
 		expect(await cancelled.callbacks.get("session_before_compact")(cancelledEvent, cancelled.ctx)).toBeUndefined();
+		expect(piCompact).not.toHaveBeenCalled();
 	});
 
 	it("keeps scheduled-agent behavior and lets the resulting epoch expire an advisory", async () => {

@@ -98,7 +98,7 @@ Distinguish "summary prepared/draft proposed" from "Pi committed the compaction"
 
 Automated tests must cover tool result-before-compaction ordering, no nested compaction, continued task execution without forced loops, old/invalid/off-branch offers, context edits, model/window changes, competing handlers, queued input before and during generation, aborts, duplicate calls, reload, malformed summary repair, and native fallback isolation. Verify evidence bounds and pagination, option deltas, net-savings arithmetic, fixed overhead, pressure transitions, cooldown, budget exhaustion, and native opt-out.
 
-Run a real Pi 1.2 boundary smoke test with a local fake provider rather than relying only on mocked handlers. Retain the older development dependency tests as compatibility evidence, not proof of the new lifecycle contract.
+Run boundary smoke tests against the real tested host with a local fake provider rather than relying only on mocked handlers. As of v0.2.3, Pi 1.5.0 is the tested runtime baseline; Pi 1.2 checks are no longer maintained. Older capability guards remain best effort. Retain the older development dependency tests as compatibility evidence, not proof of the current lifecycle contract.
 
 Compare three policies on recorded debugging sessions: native cutoff, v0.1.2 delayed preference, and proactive informed selection. Hold provider/model and tasks constant. Measure mandatory compaction frequency, estimated versus actual occupancy, rejected/stale choices, rereads and repeated hypotheses, lost constraints, task success, latency, summarization tokens, and total cost including cache effects. Synthetic fixtures prove mechanics only; they cannot establish semantic quality.
 
@@ -118,10 +118,10 @@ The split-prefix repair omission was reproduced against the real native compacto
 
 - `npm test` runs deterministic policy, evidence, lifecycle, legacy, summary validation, and mechanical replay tests.
 - `npm run typecheck` checks against the repository's development SDK.
-- `node scripts/verify-pi12.mjs <installed-pi-package-path> proactive` runs a real Pi 1.2 session with a local fake provider: persisted selection result, summary, committed draft, normal continuation.
+- `node scripts/verify-pi12.mjs <installed-pi-package-path> proactive` runs a real session against the supplied Pi 1.5 package with a local fake provider (the script retains its historical filename): persisted selection result, summary, committed draft, normal continuation.
 - The same command with `scheduled` tests deliberate scheduling plus another extension's settled follow-up.
 - `queued` injects user input during generation and requires context retention rather than committing the draft.
-- `split-repair` returns malformed split headings first, then requires preservation and repair feedback on the real Pi 1.2 prefix request before returning a valid summary.
+- `split-repair` returns malformed split headings first, then requires preservation and repair feedback on the real host's prefix request before returning a valid summary.
 
 The smoke harness uses an isolated temporary agent directory, in-memory session, and local provider, with networking disabled. It does not change the global installation. A supplied runtime is required; it never installs one automatically.
 

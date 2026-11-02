@@ -87,26 +87,41 @@ export async function executeTargetedCompaction(options: {
 		return { ok: false, code: "missing-model", message: "Targeted compaction requires an active Pi model." };
 	}
 
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-	if (!auth.ok) {
-		return {
-			ok: false,
-			code: "authentication",
-			message: `Targeted compaction could not resolve model credentials: ${auth.error}`,
-		};
-	}
-
 	try {
+		if (event.signal.aborted) {
+			return { ok: false, code: "cancelled", message: "Targeted compaction was cancelled." };
+		}
 		type SummarizationStreamFn = NonNullable<Parameters<typeof compact>[7]>;
 		const registry = ctx.modelRegistry as typeof ctx.modelRegistry & { streamSimple?: SummarizationStreamFn };
-		// Modern Pi providers belong to this session's runtime, not the global compat registry.
-		const streamFn: SummarizationStreamFn | undefined = registry.streamSimple?.bind(registry);
+		// Session-owned streams resolve request-time auth (and virtual models) themselves.
+		// Echoing stored OAuth as an explicit apiKey changes the provider's auth path.
+		const streamFn = typeof registry.streamSimple === "function" ? registry.streamSimple.bind(registry) : undefined;
+		let model = ctx.model;
+		let auth: { apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> } = {};
+		if (!streamFn) {
+			// Older hosts use the global compactor, which needs explicit request auth.
+			let resolved;
+			try {
+				resolved = await registry.getApiKeyAndHeaders(model);
+			} catch (error) {
+				if (event.signal.aborted) throw error;
+				return { ok: false, code: "authentication", message: "Targeted compaction could not resolve model credentials.", error };
+			}
+			if (event.signal.aborted) {
+				return { ok: false, code: "cancelled", message: "Targeted compaction was cancelled." };
+			}
+			if (!resolved.ok) {
+				return { ok: false, code: "authentication", message: `Targeted compaction could not resolve model credentials: ${resolved.error}` };
+			}
+			if (resolved.baseUrl) model = { ...model, baseUrl: resolved.baseUrl };
+			auth = { apiKey: resolved.apiKey, headers: nonNullHeaders(resolved.headers), env: resolved.env };
+		}
 		const input = buildTargetedCompactionInput(contextEntries, candidate, event.preparation);
 		const result = await runValidatedCompaction([
 			input,
-			ctx.model,
+			model,
 			auth.apiKey,
-			nonNullHeaders(auth.headers),
+			auth.headers,
 			summaryFocus,
 			event.signal,
 			ctx.thinkingLevel,

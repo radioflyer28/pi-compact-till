@@ -41,6 +41,10 @@ try {
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
 	loader.getExtensions().runtime.flagValues.set("compact-until-advisory-mode", mode);
+	// This harness tests delivery/prefix persistence, not default pressure policy.
+	// Pi 1.5 estimates this short synthetic history below the default bands;
+	// select explicit fixture thresholds rather than relying on fake usage totals.
+	loader.getExtensions().runtime.flagValues.set(mode === "proactive" ? "compact-until-proactive-threshold" : "compact-until-advisory-threshold", "30");
 	if (action === "supersede") loader.getExtensions().runtime.flagValues.set("compact-until-high-pressure", "85");
 	const snapshots = [];
 	let offer;

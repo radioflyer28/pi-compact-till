@@ -4,16 +4,16 @@ Choose the first Pi message to retain so newer working context remains verbatim.
 
 ## Install
 
-Install the pinned Git release globally for Pi (proactive mode requires Pi 1.2+):
+Install the pinned Git release globally for Pi (tested runtime baseline: Pi 1.5.0):
 
 ```bash
-pi install git:github.com/radioflyer28/pi-compact-till@v0.2.2
+pi install git:github.com/radioflyer28/pi-compact-till@v0.2.3
 ```
 
 Install it for only the current Pi project:
 
 ```bash
-pi install git:github.com/radioflyer28/pi-compact-till@v0.2.2 -l
+pi install git:github.com/radioflyer28/pi-compact-till@v0.2.3 -l
 ```
 
 To try a local checkout without installing it:
@@ -22,7 +22,7 @@ To try a local checkout without installing it:
 pi -e .
 ```
 
-After upgrading an already-running session, wait for any active compaction to finish or fail, then run `/reload` (or restart Pi). Updating files on disk does not update an extension already loaded in memory. See [v0.2.2 release notes](docs/release-v0.2.2.md) for cache-stable advisory delivery, [v0.2.1 release notes](docs/release-v0.2.1.md) for the scheduling gate, and [v0.2.0 release notes](docs/release-v0.2.0.md) for the remaining prompt-submission caveat.
+After upgrading an already-running session, wait for any active compaction to finish or fail, then run `/reload` (or restart Pi). Updating files on disk does not update an extension already loaded in memory. See [v0.2.3 release notes](docs/release-v0.2.3.md) for shared agent safeguards and runtime authentication, [v0.2.2 release notes](docs/release-v0.2.2.md) for cache-stable advisory delivery, [v0.2.1 release notes](docs/release-v0.2.1.md) for the scheduling gate, and [v0.2.0 release notes](docs/release-v0.2.0.md) for the remaining prompt-submission caveat.
 
 ## Use
 
@@ -53,13 +53,13 @@ Native `/compact` and overflow recovery remain unchanged. Automatic threshold co
 The package also gives the Pi agent two tools for deliberate context management. They build on the same safe user and agent boundaries exposed by the `a` picker view.
 
 - `list_compaction_boundaries` returns safe retained-boundary IDs, their kind, and a concise preview.
-- `schedule_compaction` accepts one returned `firstKeptEntryId` plus optional `summaryFocus`, but only at or above the effective moderate-pressure threshold. Below that threshold it declines without creating a pending request. Missing capacity/settings also prevents scheduling. This gate applies in proactive, threshold, and off advisory modes. In the unreleased development version, scheduling also shares proactive net-savings and headroom checks at authorization, execution, and after summary generation; ineffective requests are declined with an explicit reason.
+- `schedule_compaction` accepts one returned `firstKeptEntryId` plus optional `summaryFocus`, but only at or above the effective moderate-pressure threshold. Below that threshold it declines without creating a pending request. Missing capacity/settings also prevents scheduling. This gate applies in proactive, threshold, and off advisory modes. Scheduling also shares proactive net-savings and headroom checks at authorization, execution, and after summary generation; ineffective requests are declined with an explicit reason.
 
 The agent should discover boundaries first, then schedule compaction only after a meaningful transition—such as a completed investigation, passing tests, or archiving an OpenSpec change. Scheduling does not interrupt the current run and does not ask for user confirmation. Once the agent run settles, the package revalidates the selected boundary and pressure threshold, and compacts only when there is no queued user input. Explicit user `/compact` and `/compact-until` commands remain unrestricted by this agent-only gate.
 
 Pi notifies you when agent-directed compaction is scheduled, completes, is cancelled, or fails. Native `/compact`, automatic threshold compaction, and overflow recovery remain unchanged unless an agent-directed request has reached its triggering phase.
 
-## Proactive compaction advisory (Pi 1.2+)
+## Proactive compaction advisory
 
 The default advisory now asks for an explicit proactive decision, rather than a cutoff to save for mandatory compaction. Proactive and legacy advisories are appended once to a successful **top-level tool result**, before Pi persists it. They do not inject a user message or rewrite the system prompt. If no tool completes, the offer waits; native automatic compaction remains available. Nested tool results and errors do not consume an offer. The labeled advisory remains in its original result after inspection, defer, native selection, failure, or silence, until normal compaction removes that part of history. Answered and superseded offers are historical, not new instructions. At moderate pressure (derived from the model window and effective native reserve), the active model sees a bounded menu with source excerpts, summarized-message counts, differences between choices, projected occupancy, and estimated **net** savings. Options retain one contiguous suffix; earlier context is summarized, not simply forgotten.
 
@@ -79,7 +79,7 @@ Ignored/deferred offers may be replaced after two completed turns plus meaningfu
 pi --compact-until-proactive-threshold 60 --compact-until-high-pressure 75
 ```
 
-Accepted compaction runs through Pi 1.2's actionable `turn_end` draft API after tool results are recorded. The extension rechecks session, projected content, model, queue, capacity and generated summary size. It does not abort the agent or force a continuation. Proactive failure leaves context unchanged; it never substitutes an unapproved cutoff. Native threshold/overflow handling remains available. Pending requests are not replayed after reload. Summary validation is structural, not proof of factual completeness.
+Accepted compaction runs through Pi's actionable `turn_end` draft API after tool results are recorded. The extension rechecks session, projected content, model, queue, capacity and generated summary size. It does not abort the agent or force a continuation. Proactive failure leaves context unchanged; it never substitutes an unapproved cutoff. Native threshold/overflow handling remains available. Pending requests are not replayed after reload. Summary validation is structural, not proof of factual completeness.
 
 Capacity estimates include an 8,192-token summary allowance, estimated fixed overhead, response/persisted reserve headroom, and a safety margin. Persisted settings do not expose SDK-only in-memory overrides, and provider tokenization can differ; estimates are not guarantees.
 
@@ -120,7 +120,9 @@ The [evaluation guide](docs/semantic-evaluation.md) describes six synthetic cont
 
 ## Development
 
-The package uses documented Pi extension APIs. Unit tests/typecheck use the pinned development SDK; proactive boundary execution additionally requires the real Pi 1.2 smoke test described in the design document. No task-quality improvement is claimed from synthetic tests alone.
+The package uses documented Pi extension APIs. Pi 1.5.0 is the tested runtime baseline for v0.2.3 and future release checks; Pi 1.2 verification is no longer maintained. Older-host capability guards and the explicit-auth fallback remain best-effort compatibility paths, not a tested support guarantee. No new version restriction is enforced by the package manifest. Unit tests/typecheck still use the pinned development SDK; lifecycle release checks additionally run against the real Pi 1.5 host with a local faux provider. The historical `verify-pi12.mjs` filename is retained, but supply the Pi 1.5 package path. No task-quality improvement is claimed from synthetic tests alone.
+
+Targeted summaries use the session-owned registry stream when available, leaving stored OAuth/API-key authentication, auth-selected endpoints, header deletion, and virtual-model routing to the host runtime. Hosts without that capability retain explicit auth resolution. Run `node scripts/verify-targeted-auth.mjs <installed-pi-package-path>` against Pi 1.5+ for the offline OAuth/API-key regression, summary repair, and virtual routing/physical-limit checks. It uses synthetic credentials and a local faux provider; it does not establish real-provider OAuth behavior. Runtime stream errors remain compaction failures (or cancellation); legacy credential lookup failures are classified as authentication failures.
 
 ```bash
 pnpm install

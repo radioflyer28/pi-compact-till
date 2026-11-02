@@ -39,11 +39,13 @@ describe("targeted compaction with the native SDK", () => {
 		const entries = [entry("u1", "user", "request"), entry("a1", "assistant", "finished investigation"), entry("u2", "user", "keep")];
 		const usage = { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 30, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 		const registry = {
-			getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "local-key" }),
+			getApiKeyAndHeaders: vi.fn(() => { throw new Error("Runtime streams must not pre-resolve stored OAuth"); }),
 			streamSimple: vi.fn(function (this: unknown, _model: unknown, context: unknown, options: any) {
 				expect(this).toBe(registry);
 				expect(JSON.stringify(context)).toContain("finished investigation");
 				expect(options).toMatchObject({ cacheRetention: "none", signal: controller.signal });
+				// Assert the real compact() options, not just its positional arguments.
+				for (const field of ["apiKey", "headers", "env"]) expect(options[field]).toBeUndefined();
 				return { result: async () => ({ role: "assistant", content: [{ type: "text", text: summary }], usage, stopReason: "stop", timestamp: 1 }) };
 			}),
 		};
@@ -62,6 +64,7 @@ describe("targeted compaction with the native SDK", () => {
 		});
 		expect(result).toMatchObject({ ok: true, compaction: { summary, firstKeptEntryId: "u2", usage } });
 		expect(registry.streamSimple).toHaveBeenCalledOnce();
+		expect(registry.getApiKeyAndHeaders).not.toHaveBeenCalled();
 	});
 });
 

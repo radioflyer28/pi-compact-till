@@ -92,7 +92,10 @@ describe("targeted compaction executor", () => {
 		});
 
 		expect(result).toMatchObject({ ok: true, compaction: { details: { native: true, compactUntil: { firstKeptEntryId: "u2", agentDirected: true } } } });
+		expect(piCompact.mock.calls[0]?.[2]).toBe("key");
 		expect(piCompact.mock.calls[0]?.[3]).toEqual({ kept: "yes" });
+		expect(piCompact.mock.calls[0]?.[6]).toBe("high");
+		expect(piCompact.mock.calls[0]?.[7]).toBeUndefined();
 		expect(piCompact.mock.calls[0]?.[4]).toContain("preserve tests");
 	});
 
@@ -109,6 +112,27 @@ describe("targeted compaction executor", () => {
 		});
 		expect(await executeTargetedCompaction({ contextEntries: entries, candidate, event, ctx, provenance: { agentDirected: false } })).toMatchObject({ ok: true });
 		expect(ctx.modelRegistry.streamSimple).toHaveBeenCalledOnce();
+		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+		for (const index of [2, 3, 8]) expect(piCompact.mock.calls[0]?.[index]).toBeUndefined();
+	});
+
+	it("preserves an auth-selected endpoint on older hosts without mutating the selected model", async () => {
+		const { entries, candidate, event, ctx } = fixture();
+		ctx.modelRegistry.getApiKeyAndHeaders.mockResolvedValue({ ok: true, apiKey: "synthetic-key", baseUrl: "https://auth-selected.invalid", env: { TEST_SCOPE: "local" } });
+		piCompact.mockResolvedValue({ summary: validSummary, firstKeptEntryId: "u2", tokensBefore: 100 });
+		expect(await executeTargetedCompaction({ contextEntries: entries, candidate, event, ctx, provenance: { agentDirected: false } })).toMatchObject({ ok: true });
+		expect(piCompact.mock.calls[0]?.[1]).toEqual({ ...ctx.model, baseUrl: "https://auth-selected.invalid" });
+		expect(ctx.model.baseUrl).toBeUndefined();
+		expect(piCompact.mock.calls[0]?.[8]).toEqual({ TEST_SCOPE: "local" });
+	});
+
+	it("classifies a rejected legacy auth lookup and cancellation during lookup", async () => {
+		const { entries, candidate, event, ctx, controller } = fixture();
+		ctx.modelRegistry.getApiKeyAndHeaders.mockRejectedValue(new Error("offline auth failure"));
+		expect(await executeTargetedCompaction({ contextEntries: entries, candidate, event, ctx, provenance: { agentDirected: false } })).toMatchObject({ ok: false, code: "authentication" });
+		ctx.modelRegistry.getApiKeyAndHeaders.mockImplementation(async () => { controller.abort(); return { ok: true }; });
+		expect(await executeTargetedCompaction({ contextEntries: entries, candidate, event, ctx, provenance: { agentDirected: false } })).toMatchObject({ ok: false, code: "cancelled" });
+		expect(piCompact).not.toHaveBeenCalled();
 	});
 
 	it("returns typed model and authentication failures", async () => {
@@ -129,11 +153,12 @@ describe("targeted compaction executor", () => {
 	it("distinguishes cancellation from an underlying compaction failure", async () => {
 		const cancelled = fixture();
 		cancelled.controller.abort();
-		piCompact.mockRejectedValueOnce(new Error("aborted"));
+		// A pre-aborted request must not consume a provider response.
+		piCompact.mockRejectedValueOnce(new Error("provider failed"));
 		expect(await executeTargetedCompaction({ contextEntries: cancelled.entries, candidate: cancelled.candidate, event: cancelled.event, ctx: cancelled.ctx, provenance: { agentDirected: false } })).toMatchObject({ ok: false, code: "cancelled" });
 
 		const failed = fixture();
-		piCompact.mockRejectedValueOnce(new Error("provider failed"));
+		expect(piCompact).not.toHaveBeenCalled();
 		expect(await executeTargetedCompaction({ contextEntries: failed.entries, candidate: failed.candidate, event: failed.event, ctx: failed.ctx, provenance: { agentDirected: false } })).toMatchObject({ ok: false, code: "compaction-failed", message: expect.stringContaining("provider failed") });
 	});
 });
